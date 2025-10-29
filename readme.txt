@@ -1,0 +1,1 @@
+This is the repository for IDLCV3 project for the course 02516 Introduction to deep learning for in computer vision, Fall 2025
