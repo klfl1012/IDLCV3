@@ -194,6 +194,7 @@ def create_compiled_unet(
     norm_type: str = 'batch',
     norm_groups: int = 8,
     dropout: float | None = 0.1,
+    enable_compile: bool = True,
     mode: str = 'default', # 'default' | 'max-autotune' | 'reduce-overhead'
 ):
     
@@ -207,7 +208,13 @@ def create_compiled_unet(
         dropout=dropout,
     )
 
-    if torch.__version__ >= '2.0.0':
+    should_compile = (
+        enable_compile and 
+        torch.__version__ >= '2.0.0' and
+        torch.cuda.is_available()
+    )
+
+    if should_compile:
         model = torch.compile(model, mode=mode)
         print(f'torch.compile enabled with mode="{mode}"')
 
@@ -225,7 +232,7 @@ if __name__ == '__main__':
     base_model = UNet(in_channels=3, out_channels=1, norm_type='batch')
     
     from torchinfo import summary
-    print("\n=== Unkompiliertes Modell (für Summary) ===")
+    print("\n=== Uncompiled model (for Summary) ===")
     summary(base_model, input_size=(1, 3, 256, 256))
 
     print("\n=== Performance-Test ===")
@@ -263,6 +270,6 @@ if __name__ == '__main__':
     
     print(f"\nNormal model:    {time_normal:.4f}s ({n_runs} runs)")
     print(f"Compiled model:  {time_compiled:.4f}s ({n_runs} runs)")
-    print(f"Speedup:         {time_normal/time_compiled:.2f}x")
+    print(f"Speedup:        {time_normal/time_compiled:.2f}x")
 
     
