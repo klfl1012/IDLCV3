@@ -237,39 +237,53 @@ if __name__ == '__main__':
 
     print("\n=== Performance-Test ===")
     import time
-    
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
-    x = torch.randn(4, 3, 256, 256).to(device)
     
-    model_normal = UNet(3, 1, norm_type='batch').to(device).eval()
-    model_compiled = create_compiled_unet(3, 1, norm_type='batch', mode='max-autotune')
-    model_compiled = model_compiled.to(device).eval()
-    
-    with torch.no_grad():
-        for _ in range(10):  # Warmup
-            _ = model_normal(x)
-            _ = model_compiled(x)
-    
-    n_runs = 100
-    
-    torch.cuda.synchronize() if torch.cuda.is_available() else None
-    start = time.time()
-    with torch.no_grad():
-        for _ in range(n_runs):
-            _ = model_normal(x)
-    torch.cuda.synchronize() if torch.cuda.is_available() else None
-    time_normal = time.time() - start
-    
-    torch.cuda.synchronize() if torch.cuda.is_available() else None
-    start = time.time()
-    with torch.no_grad():
-        for _ in range(n_runs):
-            _ = model_compiled(x)
-    torch.cuda.synchronize() if torch.cuda.is_available() else None
-    time_compiled = time.time() - start
-    
-    print(f"\nNormal model:    {time_normal:.4f}s ({n_runs} runs)")
-    print(f"Compiled model:  {time_compiled:.4f}s ({n_runs} runs)")
-    print(f"Speedup:        {time_normal/time_compiled:.2f}x")
+    for batch_size in [16, 32]:
+        print(f"\n--- Batch Size: {batch_size} ---")
+        x = torch.randn(batch_size, 3, 256, 256).to(device)
+        
+        model_normal = UNet(3, 1, norm_type='batch').to(device).eval()
+        model_compiled = create_compiled_unet(3, 1, norm_type='batch', mode='max-autotune')
+        model_compiled = model_compiled.to(device).eval()
+        
+        # long warmup for compiler 
+        print("Warming up...")
+        with torch.no_grad():
+            for _ in range(50):  
+                _ = model_normal(x)
+            for _ in range(50):
+                _ = model_compiled(x)
+        
+        n_runs = 200  
+        
+        # Normal model
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start = time.time()
+        with torch.no_grad():
+            for _ in range(n_runs):
+                _ = model_normal(x)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        time_normal = time.time() - start
+        
+        # Compiled model
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start = time.time()
+        with torch.no_grad():
+            for _ in range(n_runs):
+                _ = model_compiled(x)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        time_compiled = time.time() - start
+        
+        fps_normal = (n_runs * batch_size) / time_normal
+        fps_compiled = (n_runs * batch_size) / time_compiled
+        
+        print(f"Normal model:    {time_normal:.4f}s ({fps_normal:.1f} imgs/s)")
+        print(f"Compiled model:  {time_compiled:.4f}s ({fps_compiled:.1f} imgs/s)")
+        print(f"Speedup:         {time_normal/time_compiled:.2f}x")
 
     
