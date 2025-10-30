@@ -13,7 +13,6 @@ from torchvision.utils import make_grid
 import segmentation_models_pytorch as smp
 
 
-
 class LitSegmenter(pl.LightningModule):
 
     def __init__(
@@ -48,7 +47,7 @@ class LitSegmenter(pl.LightningModule):
         self.train_acc = tm.Accuracy(task=task, num_classes=num_classes)
         self.val_acc = tm.Accuracy(task=task, num_classes=num_classes)
         
-        # Medizinische Metriken
+       
         self.train_sensitivity = tm.Recall(task=task, num_classes=num_classes)  # True Positive Rate
         self.val_sensitivity = tm.Recall(task=task, num_classes=num_classes)
         self.train_specificity = tm.Specificity(task=task, num_classes=num_classes)  # True Negative Rate
