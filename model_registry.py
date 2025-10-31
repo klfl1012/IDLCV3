@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
 import torch.nn as nn
-from unet import UNet
+# from unet import UNet
+from unet import UNet, create_compiled_unet
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,7 @@ class ModelSpec:
 
 # default configs for models
 DRIVE_CONFIG = {
-    'in_channels': 3,      # RGB images
+    'in_channels': 3,       # RGB images
     'out_channels': 1,     # Binary segmentation (vessels)
     'features': [64, 128, 256, 512],
 }
@@ -43,8 +44,25 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             'out_channels': 1,
             'features': [64, 128, 256, 512],
             'activation': nn.SiLU,
-            'norm_groups': 8,
+            'norm_type': 'batch',
             'dropout': 0.1,
+        },
+    ),
+    'unet_compiled': ModelSpec(
+        name='UNet-Compiled',
+        build_fn=lambda **kwargs: create_compiled_unet(**kwargs), # type: ignore[arg-type]
+        in_channels=3,
+        out_channels=1,
+        description='Refactored U-Net with torch.compile optimization for maximum performance.',
+        default_params={
+            'in_channels': 3,
+            'out_channels': 1,
+            'features': [64, 128, 256, 512],
+            'activation': nn.SiLU,
+            'norm_type': 'batch',
+            'dropout': 0.1,
+            'enable_compile': True,
+            'compile_mode': 'max-autotune',
         },
     ),
     'unet_small': ModelSpec(
@@ -58,7 +76,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             'out_channels': 1,
             'features': [32, 64, 128, 256],
             'activation': nn.SiLU,
-            'norm_groups': 8,
+            'norm_type': 'batch',
             'dropout': 0.1,
         },
     ),
@@ -73,7 +91,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             'out_channels': 1,
             'features': [64, 128, 256, 512, 1024],
             'activation': nn.SiLU,
-            'norm_groups': 8,
+            'norm_type': 'batch',
             'dropout': 0.2,
         },
     ),
@@ -100,10 +118,10 @@ def build_model(
     name: str,
     dataset: str = 'drive',
     **model_kwargs
-) -> nn.Module:
+) -> tuple[nn.Module, dict]:
     spec = resolve_model(name)
     
-    # start with default parameters
+    # default parameters
     params = spec.default_params.copy() if spec.default_params else {}
     
     # apply dataset-specific config
@@ -120,37 +138,28 @@ def build_model(
     
     model = spec.build_fn(**params)
     
+    # Config für Reconstruction
+    model_config = {
+        'name': name,
+        'dataset': dataset,
+        'kwargs': params,
+    }
+    
     print(f'Built {spec.name} for {dataset.upper()} dataset')
-    print(f'  Input channels: {params['in_channels']}, Output channels: {params['out_channels']}')
+    print(f'  Input channels: {params["in_channels"]}, Output channels: {params["out_channels"]}')
     if 'features' in params:
-        print(f'  Feature channels: {params['features']}')
+        print(f'  Feature channels: {params["features"]}')
     
-    return model
+    return model, model_config
 
 
-def get_model_info(name: str) -> str:
-    '''Get detailed information about a model.
-    
-    Args:
-        name: Model name from registry
-        
-    Returns:
-        Formatted string with model information
-    '''
-    spec = resolve_model(name)
-    info = [
-        f'Model: {spec.name}',
-        f'Description: {spec.description}',
-        f'Default input channels: {spec.in_channels}',
-        f'Default output channels: {spec.out_channels}',
-    ]
-    
-    if spec.default_params:
-        info.append('\nDefault parameters:')
-        for key, value in spec.default_params.items():
-            info.append(f'  {key}: {value}')
-    
-    return '\n'.join(info)
+def rebuild_model_from_config(model_config: dict) -> nn.Module:
+    """Rebuild model from saved config."""
+    return build_model(
+        name=model_config['name'],
+        dataset=model_config['dataset'],
+        **model_config['kwargs']
+    )[0]
 
 
 __all__ = [
@@ -159,7 +168,7 @@ __all__ = [
     'available_models',
     'resolve_model',
     'build_model',
-    'get_model_info',
+    'rebuild_model_from_config',
     'DRIVE_CONFIG',
     'PH2_CONFIG',
 ]
