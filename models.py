@@ -1,7 +1,3 @@
-"""
-UNet Refactored - Version 1: Helper Classes
-Cleaner separation of encoder/decoder logic
-"""
 import torch
 import torch.nn as nn
 from typing import List, Type, Optional
@@ -79,6 +75,7 @@ class EncoderBlock(nn.Module):
         norm_type: str = 'batch',
         norm_groups: int = 8,
         dropout: Optional[float] = None,
+        residual: bool = True,
     ):
         super().__init__()
         self.conv = ConvBlock(
@@ -88,6 +85,7 @@ class EncoderBlock(nn.Module):
             norm_type=norm_type,
             norm_groups=norm_groups,
             dropout=dropout,
+            residual=residual,
         )
         self.pool = nn.MaxPool2d(2, 2)
     
@@ -109,6 +107,8 @@ class DecoderBlock(nn.Module):
         norm_type: str = 'batch',
         norm_groups: int = 8,
         dropout: Optional[float] = None,
+        residual: bool = True,
+        use_skip_conn: bool = True,
     ):
         super().__init__()
         self.upsample = nn.ConvTranspose2d(
@@ -118,17 +118,19 @@ class DecoderBlock(nn.Module):
             stride=2
         )
         self.conv = ConvBlock(
-            in_channels=out_channels * 2,  # Concatenated with skip
+            in_channels=out_channels * 2 if use_skip_conn else out_channels, # If using skip conn, input channels are doubled
             out_channels=out_channels,
             activation=activation,
             norm_type=norm_type,
             norm_groups=norm_groups,
             dropout=dropout,
+            residual=residual,
         )
     
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = self.upsample(x)
-        x = torch.cat([skip, x], dim=1)
+        if self.use_skip_conn and skip is not None:
+            x = torch.cat([skip, x], dim=1)
         return self.conv(x)
 
 
@@ -143,6 +145,7 @@ class Encoder(nn.Module):
         norm_type: str,
         norm_groups: int,
         dropout: Optional[float],
+        residual: bool = True,
     ):
         super().__init__()
         self.stages = nn.ModuleDict()
@@ -157,6 +160,7 @@ class Encoder(nn.Module):
                 norm_type=norm_type,
                 norm_groups=norm_groups,
                 dropout=dropout if i > 0 else None,  # No dropout on first layer
+                residual=residual,
             )
             channels = feat
     
@@ -180,6 +184,8 @@ class Decoder(nn.Module):
         norm_type: str,
         norm_groups: int,
         dropout: Optional[float],
+        residual: bool = True,
+        use_skip_conn: bool = True,
     ):
         super().__init__()
         self.stages = nn.ModuleDict()
@@ -194,6 +200,8 @@ class Decoder(nn.Module):
                 norm_type=norm_type,
                 norm_groups=norm_groups,
                 dropout=dropout if i < len(features) - 1 else None,  # No dropout on last layer
+                residual=residual,
+                use_skip_conn=use_skip_conn,
             )
             channels = feat
     
@@ -204,7 +212,24 @@ class Decoder(nn.Module):
 
 
 class UNet(nn.Module):
-    """U-Net with separated Encoder and Decoder classes."""
+    """
+    U-Net with separated Encoder and Decoder classes. 
+    Can be used as a Encoder-Decoder model without skip connections.
+
+    Args:    
+        in_channels: Number of input channels
+        out_channels: Number of output channels
+        features: List of feature map sizes for each encoder stage
+        activation: Activation function class
+        norm_type: Type of normalization ('batch', 'group', 'instance')
+        norm_groups: Number of groups for GroupNorm (if used)
+        dropout: Dropout probability
+        residual: Whether to use residual connections in ConvBlocks
+        use_skip_conn: Whether to use skip connections between encoder and decoder
+
+    Returns:
+        nn.Module: U-Net model or Encoder-Decoder model
+    """
 
     def __init__(
         self,
@@ -215,6 +240,8 @@ class UNet(nn.Module):
         norm_type: str = 'batch',
         norm_groups: int = 8,
         dropout: Optional[float] = 0.1,
+        residual: bool = True,
+        use_skip_conn: bool = True,
     ):
         super().__init__()
         features = features or [64, 128, 256, 512]
@@ -227,6 +254,7 @@ class UNet(nn.Module):
             norm_type=norm_type,
             norm_groups=norm_groups,
             dropout=dropout,
+            residual=residual,
         )
         
         # Bottleneck
@@ -238,6 +266,7 @@ class UNet(nn.Module):
             norm_type=norm_type,
             norm_groups=norm_groups,
             dropout=dropout,
+            residual=residual,
         )
         
         # Decoder
@@ -248,6 +277,8 @@ class UNet(nn.Module):
             norm_type=norm_type,
             norm_groups=norm_groups,
             dropout=dropout,
+            use_skip_conn=use_skip_conn,
+            residual=residual,
         )
         
         # Head
@@ -286,6 +317,8 @@ def create_compiled_unet(
     norm_type: str = 'batch',
     norm_groups: int = 8,
     dropout: Optional[float] = 0.1,
+    residual: bool = True,
+    use_skip_conn: bool = True,
     enable_compile: bool = True,
     compile_mode: str = 'default',
 ):
@@ -298,6 +331,8 @@ def create_compiled_unet(
         norm_type=norm_type,
         norm_groups=norm_groups,
         dropout=dropout,
+        residual=residual,
+        use_skip_conn=use_skip_conn,
     )
     
     # Apply torch.compile if available and requested
