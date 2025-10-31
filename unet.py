@@ -1,11 +1,6 @@
 import torch.nn as nn
 import torch
 
-# TODO: Dropout only during training,
-# TODO: mixed precision support,
-# TODO: torch.compile and autocast,
-# TODO: batch norm instead of group norm,
-# TODO: kernel fusion
 
 class ConvBlock(nn.Module):
 
@@ -123,7 +118,7 @@ class UNet(nn.Module):
 
             # self.upsample.append(
             #     nn.Sequential(
-            #         nn.Upsample(scale_factor=2, mode='nearest'), 
+            #         nn.Upsample(scale_factor=2, mode='bilinear'), 
             #         nn.Conv2d(bottleneck_channels, feat, kernel_size=3, padding=1)
             #     )
             # )

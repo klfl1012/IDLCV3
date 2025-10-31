@@ -60,7 +60,7 @@ def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> 
             return factory(criterion_kwargs)
     
     # Fallback
-    print(f"⚠️  Unknown criterion '{criterion_name}', using BCE as fallback")
+    print(f"Unknown criterion '{criterion_name}', using BCE as fallback")
     return nn.BCEWithLogitsLoss()
 
 
