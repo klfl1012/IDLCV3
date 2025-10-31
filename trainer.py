@@ -13,7 +13,6 @@ from torchvision.utils import make_grid
 import segmentation_models_pytorch as smp
 
 
-
 class LitSegmenter(pl.LightningModule):
 
     def __init__(
@@ -27,6 +26,10 @@ class LitSegmenter(pl.LightningModule):
         outdir: str = './results',
         num_classes: int = 2,
         log_imgs_every_n_epochs: int = 5,
+        model_name: Optional[str] = None,
+        model_config: Optional[dict] = None,
+        criterion_class: Optional[Type[nn.Module]] = None,
+        criterion_kwargs: Optional[dict] = None
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model', 'criterion'])
@@ -42,13 +45,12 @@ class LitSegmenter(pl.LightningModule):
         self.outdir = Path(outdir)
         os.makedirs(self.outdir, exist_ok=True)
 
+        # metrics
         task = 'binary' if num_classes == 2 else 'multiclass'
         self.train_iou = tm.JaccardIndex(task=task, num_classes=num_classes)
         self.val_iou = tm.JaccardIndex(task=task, num_classes=num_classes)
         self.train_acc = tm.Accuracy(task=task, num_classes=num_classes)
         self.val_acc = tm.Accuracy(task=task, num_classes=num_classes)
-        
-        # Medizinische Metriken
         self.train_sensitivity = tm.Recall(task=task, num_classes=num_classes)  # True Positive Rate
         self.val_sensitivity = tm.Recall(task=task, num_classes=num_classes)
         self.train_specificity = tm.Specificity(task=task, num_classes=num_classes)  # True Negative Rate

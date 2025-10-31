@@ -100,10 +100,10 @@ def build_model(
     name: str,
     dataset: str = 'drive',
     **model_kwargs
-) -> nn.Module:
+) -> tuple[nn.Module, dict]:
     spec = resolve_model(name)
     
-    # start with default parameters
+    # default parameters
     params = spec.default_params.copy() if spec.default_params else {}
     
     # apply dataset-specific config
@@ -120,37 +120,28 @@ def build_model(
     
     model = spec.build_fn(**params)
     
+    # Config für Reconstruction
+    model_config = {
+        'name': name,
+        'dataset': dataset,
+        'kwargs': params,
+    }
+    
     print(f'Built {spec.name} for {dataset.upper()} dataset')
-    print(f'  Input channels: {params['in_channels']}, Output channels: {params['out_channels']}')
+    print(f'  Input channels: {params["in_channels"]}, Output channels: {params["out_channels"]}')
     if 'features' in params:
-        print(f'  Feature channels: {params['features']}')
+        print(f'  Feature channels: {params["features"]}')
     
-    return model
+    return model, model_config
 
 
-def get_model_info(name: str) -> str:
-    '''Get detailed information about a model.
-    
-    Args:
-        name: Model name from registry
-        
-    Returns:
-        Formatted string with model information
-    '''
-    spec = resolve_model(name)
-    info = [
-        f'Model: {spec.name}',
-        f'Description: {spec.description}',
-        f'Default input channels: {spec.in_channels}',
-        f'Default output channels: {spec.out_channels}',
-    ]
-    
-    if spec.default_params:
-        info.append('\nDefault parameters:')
-        for key, value in spec.default_params.items():
-            info.append(f'  {key}: {value}')
-    
-    return '\n'.join(info)
+def rebuild_model_from_config(model_config: dict) -> nn.Module:
+    """Rebuild model from saved config."""
+    return build_model(
+        name=model_config['name'],
+        dataset=model_config['dataset'],
+        **model_config['kwargs']
+    )[0]
 
 
 __all__ = [
@@ -159,7 +150,7 @@ __all__ = [
     'available_models',
     'resolve_model',
     'build_model',
-    'get_model_info',
+    'rebuild_model_from_config',
     'DRIVE_CONFIG',
     'PH2_CONFIG',
 ]
