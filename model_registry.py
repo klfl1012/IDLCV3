@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
-
 import torch.nn as nn
-# from unet import UNet
-from unet import UNet, create_compiled_unet
+from typing import Callable, Dict, Optional, Tuple
+from models import UNet, create_compiled_unet
 
 
 @dataclass(frozen=True)
@@ -33,6 +30,22 @@ PH2_CONFIG = {
 
 
 MODEL_REGISTRY: Dict[str, ModelSpec] = {
+    'encoder_decoder': ModelSpec(
+        name='Encoder-Decoder',
+        build_fn=lambda **kwargs: UNet(**kwargs),
+        in_channels=3,
+        out_channels=1,
+        description='Encoder-Decoder architecture for image segmentation.',
+        default_params={
+            'in_channels': 3,
+            'out_channels': 1,
+            'features': [64, 128, 256, 512],
+            'activation': nn.SiLU,
+            'norm_type': 'batch',
+            'dropout': 0.1,
+            'use_skip_connections': False,
+        },
+    ),
     'unet': ModelSpec(
         name='UNet',
         build_fn=lambda **kwargs: UNet(**kwargs),
