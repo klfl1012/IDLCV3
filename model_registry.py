@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
 import torch.nn as nn
-from unet import UNet
+# from unet import UNet
+from unet import UNet, create_compiled_unet
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,7 @@ class ModelSpec:
 
 # default configs for models
 DRIVE_CONFIG = {
-    'in_channels': 3,      # RGB images
+    'in_channels': 3,       # RGB images
     'out_channels': 1,     # Binary segmentation (vessels)
     'features': [64, 128, 256, 512],
 }
@@ -43,8 +44,25 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             'out_channels': 1,
             'features': [64, 128, 256, 512],
             'activation': nn.SiLU,
-            'norm_groups': 8,
+            'norm_type': 'batch',
             'dropout': 0.1,
+        },
+    ),
+    'unet_compiled': ModelSpec(
+        name='UNet-Compiled',
+        build_fn=lambda **kwargs: create_compiled_unet(**kwargs), # type: ignore[arg-type]
+        in_channels=3,
+        out_channels=1,
+        description='Refactored U-Net with torch.compile optimization for maximum performance.',
+        default_params={
+            'in_channels': 3,
+            'out_channels': 1,
+            'features': [64, 128, 256, 512],
+            'activation': nn.SiLU,
+            'norm_type': 'batch',
+            'dropout': 0.1,
+            'enable_compile': True,
+            'compile_mode': 'max-autotune',
         },
     ),
     'unet_small': ModelSpec(
@@ -58,7 +76,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             'out_channels': 1,
             'features': [32, 64, 128, 256],
             'activation': nn.SiLU,
-            'norm_groups': 8,
+            'norm_type': 'batch',
             'dropout': 0.1,
         },
     ),
@@ -73,7 +91,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             'out_channels': 1,
             'features': [64, 128, 256, 512, 1024],
             'activation': nn.SiLU,
-            'norm_groups': 8,
+            'norm_type': 'batch',
             'dropout': 0.2,
         },
     ),
