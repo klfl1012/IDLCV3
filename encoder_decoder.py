@@ -70,7 +70,7 @@ class EncoderDecoderModel(nn.Module):
         self.decoder = nn.Sequential()
         features_maps.append(bottleneck_channels)
         reversed_feature_map_order = list(reversed(features_maps))   
-        for i in len(reversed_feature_map_order) - 1:
+        for i in range(len(reversed_feature_map_order) - 1):
             self.decoder.add_module('Upsample',nn.Upsample(scale_factor=2, mode='nearest'))
             self.decoder.add_module('Conv2d',nn.Conv2d(bottleneck_channels, feature_map, kernel_size=kernel_size, padding=1))
     
