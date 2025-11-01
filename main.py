@@ -195,16 +195,18 @@ def main():
         resize_to=tuple(args.resize),
         augment=True,
         num_workers=4,
+        seed=args.seed,
     )
 
     val_loader = build_segmentation_dataloader(
         dataset=args.dataset,
-        split='test',  # DRIVE: use 'test', PH2: no official split
+        split='val',  # DRIVE: use 'val', PH2: no official split
         batch_size=args.batch_size,
         shuffle=False,
         resize_to=tuple(args.resize),
         augment=False,
         num_workers=4,
+        seed=args.seed,
     )
 
     # Preview batch

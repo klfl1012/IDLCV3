@@ -10,7 +10,7 @@ from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode, functional as F
 
@@ -77,43 +77,77 @@ def _discover_ph2_samples(root: Path) -> List[SegmentationSample]:
 
 
 def _discover_drive_samples(root: Path, split: str) -> List[SegmentationSample]:
-	"""Collect (image, mask) pairs from the DRIVE dataset layout."""
+    """Collect (image, mask) pairs from the DRIVE dataset layout."""
 
-	split = split.lower()
-	if split not in {"training", "train", "testing", "test"}:
-		raise ValueError("DRIVE split must be 'train'|'training' or 'test'|'testing'.")
+    split = split.lower()
+    
+    # IMPORTANT: DRIVE test folder has NO ground truth labels (1st_manual)!
+    # We MUST use training folder for all train/val/test splits
+    if split not in {"training", "train", "val", "validation", "test", "testing"}:
+        raise ValueError("DRIVE split must be 'train', 'val', or 'test'.")
 
-	split_dir = "training" if split.startswith("train") else "test"
+    # Always use training folder because it's the only one with 1st_manual labels
+    split_dir = "training"
 
-	images_dir = root / split_dir / "images"
-	masks_dir = root / split_dir / "1st_manual"
+    images_dir = root / split_dir / "images"
+    masks_dir = root / split_dir / "1st_manual"  # Ground truth labels
 
-	if not images_dir.is_dir():
-		raise FileNotFoundError(f"DRIVE images directory not found: {images_dir}")
-	if not masks_dir.is_dir():
-		raise FileNotFoundError(f"DRIVE manual masks directory not found: {masks_dir}")
+    if not images_dir.is_dir():
+        raise FileNotFoundError(f"DRIVE images directory not found: {images_dir}")
+    if not masks_dir.is_dir():
+        raise FileNotFoundError(f"DRIVE manual masks directory not found: {masks_dir}")
 
-	samples: List[SegmentationSample] = []
-	for image_path in sorted(images_dir.glob("*.tif")):
-		stem = image_path.name.replace("_training", "").replace("_test", "")
-		mask_candidates = list(masks_dir.glob(f"{stem.split('.')[0]}*_manual1.*"))
-		if not mask_candidates:
-			# Fallback to exact name with manual1.gif pattern (e.g. 21_manual1.gif)
-			stem_no_suffix = image_path.stem.split("_")[0]
-			mask_candidates = list(masks_dir.glob(f"{stem_no_suffix}_manual1.*"))
+    samples: List[SegmentationSample] = []
+    for image_path in sorted(images_dir.glob("*.tif")):
+        stem = image_path.name.replace("_training", "").replace("_test", "")
+        mask_candidates = list(masks_dir.glob(f"{stem.split('.')[0]}*_manual1.*"))
+        if not mask_candidates:
+            # Fallback to exact name with manual1.gif pattern (e.g. 21_manual1.gif)
+            stem_no_suffix = image_path.stem.split("_")[0]
+            mask_candidates = list(masks_dir.glob(f"{stem_no_suffix}_manual1.*"))
 
-		if not mask_candidates:
-			raise FileNotFoundError(
-				f"Mask for DRIVE image {image_path.name} not found under {masks_dir}."
-			)
+        if not mask_candidates:
+            raise FileNotFoundError(
+                f"Mask for DRIVE image {image_path.name} not found under {masks_dir}."
+            )
 
-		samples.append(SegmentationSample(image_path=image_path, mask_path=mask_candidates[0]))
+        samples.append(SegmentationSample(image_path=image_path, mask_path=mask_candidates[0]))
 
-	if not samples:
-		raise ValueError(f"No DRIVE samples found in split '{split_dir}'.")
+    if not samples:
+        raise ValueError(f"No DRIVE samples found in split '{split_dir}'.")
 
-	return samples
+    return samples
 
+def _split_samples(
+	samples: List[SegmentationSample],
+	split: str,
+	train_ratio: float = 0.7,
+	val_ratio: float = 0.15,
+	seed: int = 21,
+) -> List[SegmentationSample]:
+	
+	n_total = len(samples)
+	n_train = int(n_total * train_ratio)
+	n_val = int(n_total * val_ratio)
+	n_test = n_total - n_train - n_val
+
+	generator = torch.Generator().manual_seed(seed)
+	train_samples, val_samples, test_samples = random_split(
+		samples,
+		[n_train, n_val, n_test],
+		generator=generator
+	)
+	
+	split_lower = split.lower()
+	if split_lower in {"train", "training"}:
+		return [samples[i] for i in train_samples.indices]
+	elif split_lower in {"val", "validation"}:
+		return [samples[i] for i in val_samples.indices]
+	elif split_lower in {"test", "testing"}:
+		return [samples[i] for i in test_samples.indices]
+	else:
+		raise ValueError(f"Unknown split {split}.")
+	
 
 class SegmentationDataset(Dataset):
 	"""Generic semantic segmentation dataset supporting DRIVE and PH2."""
@@ -130,16 +164,36 @@ class SegmentationDataset(Dataset):
 		resize_to: Optional[Tuple[int, int]] = None,
 		augment: bool = False,
 		brightness_delta: float = 0.15,
+		seed: int = 21
 	) -> None:
 		dataset_key = dataset.lower()
 		if dataset_key not in {"drive", "ph2"}:
 			raise ValueError("dataset must be either 'drive' or 'ph2'.")
 
 		root_path = Path(root) if root is not None else DEFAULT_DATA_ROOTS[dataset_key]
+
 		if dataset_key == "ph2":
-			samples = _discover_ph2_samples(root_path)
+            # PH2: Get all samples, then split train/val/test
+			all_samples = _discover_ph2_samples(root_path)
+			samples = _split_samples(all_samples, split, seed=seed)
+			print(f"PH2 {split} split: {len(samples)} samples (seed={seed})")
 		else:
-			samples = _discover_drive_samples(root_path, split)
+            # DRIVE: Only training/ has ground truth (1st_manual)
+            # We split the 20 training images into train/val/test
+			if split.lower() in {'train', 'training'}:
+				all_train_samples = _discover_drive_samples(root_path, 'train')
+				samples = _split_samples(all_train_samples, 'train', train_ratio=0.7, val_ratio=0.15, seed=seed)
+				print(f"DRIVE train split: {len(samples)}/{len(all_train_samples)} samples (seed={seed})")
+			elif split.lower() in {'val', 'validation'}:
+				all_train_samples = _discover_drive_samples(root_path, 'train')
+				samples = _split_samples(all_train_samples, 'val', train_ratio=0.7, val_ratio=0.15, seed=seed)
+				print(f"DRIVE val split: {len(samples)}/{len(all_train_samples)} samples (seed={seed})")
+			elif split.lower() in {'test', 'testing'}:
+				all_train_samples = _discover_drive_samples(root_path, 'train')
+				samples = _split_samples(all_train_samples, 'test', train_ratio=0.7, val_ratio=0.15, seed=seed)
+				print(f"DRIVE test split: {len(samples)}/{len(all_train_samples)} samples (seed={seed})")
+			else:
+				raise ValueError(f"Unknown split: {split}")
 
 		self.dataset = dataset_key
 		self.samples = samples
@@ -219,6 +273,7 @@ def build_segmentation_dataloader(
 	resize_to: Optional[Tuple[int, int]] = None,
 	augment: bool = False,
 	brightness_delta: float = 0.15,
+	seed: int = 21
 ) -> DataLoader:
 	"""Create a DataLoader for the requested segmentation dataset."""
 
@@ -231,6 +286,7 @@ def build_segmentation_dataloader(
 		resize_to=resize_to,
 		augment=augment,
 		brightness_delta=brightness_delta,
+		seed=seed
 	)
 
 	return DataLoader(
