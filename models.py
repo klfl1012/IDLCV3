@@ -110,6 +110,8 @@ class DecoderBlock(nn.Module):
         residual: bool = True,
         use_skip_conn: bool = True,
     ):
+        self.use_skip_conn = use_skip_conn
+
         super().__init__()
         self.upsample = nn.ConvTranspose2d(
             in_channels,
