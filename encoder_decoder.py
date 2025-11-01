@@ -40,19 +40,17 @@ class EncoderDecoderModel(nn.Module):
         dropout: float | None = 0.1,
         features: list[int] | None = None,
         activation: type[nn.Module] = nn.ReLU,
-        bottleneck_channel_multiplier: int = 1,
     ):
         super().__init__()
         features_maps = features or [64, 128, 256, 512]
-        
+        my_list.insert(0, in_channel)
         # 1. Encoder
         self.encoder = nn.Sequential()
-        channels = in_channels
-        for feature_map in features_maps:
+        for i in range(len(feature_maps) - 1):
             self.encoder.add_module('ConvBMAVBlock',                 
                 ConvBMAVBlock(
-                    channels,
-                    feature_map,
+                    features_maps[i],
+                    features_maps[i + 1],
                     dropout if channels != in_channels else None,
                     activation,
                     kernel_size,
@@ -63,12 +61,11 @@ class EncoderDecoderModel(nn.Module):
             self.encoder.add_module('MaxPooling',nn.MaxPool2d(2, 2))
 
         # 2. Bottleneck
-        bottleneck_channels = features_maps[-1] * bottleneck_channel_multiplier
-        self.bottleneck_conv = nn.Conv2d(features_maps[-1], bottleneck_channels, kernel_size=kernel_size, padding=1)
+        bottleneck_channels = features_maps[-1]
+        self.bottleneck_conv = nn.Conv2d(bottleneck_channels, bottleneck_channels, kernel_size=kernel_size, padding=1)
 
         # 3. Decoder
         self.decoder = nn.Sequential()
-        features_maps.append(bottleneck_channels)
         reversed_feature_map_order = list(reversed(features_maps))   
         for i in range(len(reversed_feature_map_order) - 1):
             self.decoder.add_module('Upsample',nn.Upsample(scale_factor=2, mode='nearest'))
