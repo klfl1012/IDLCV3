@@ -151,11 +151,19 @@ def build_model(
     
     model = spec.build_fn(**params)
     
+    # Detect if model uses channels_last (for compiled models)
+    uses_channels_last = False
+    if hasattr(model, '_uses_channels_last_flag'):
+        flag_tensor = getattr(model, '_uses_channels_last_flag')
+        if flag_tensor is not None:
+            uses_channels_last = bool(flag_tensor.item())
+    
     # Config für Reconstruction
     model_config = {
         'name': name,
         'dataset': dataset,
         'kwargs': params,
+        'uses_channels_last': uses_channels_last,  # Store channels_last flag
     }
     
     print(f'Built {spec.name} for {dataset.upper()} dataset')

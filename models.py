@@ -336,7 +336,7 @@ def create_compiled_unet(
         residual=residual,
         use_skip_conn=use_skip_conn,
     )
-    
+
     # Apply torch.compile if available and requested
     should_compile = (
         enable_compile and 
@@ -345,13 +345,28 @@ def create_compiled_unet(
     )
     
     if should_compile:
-        model = torch.compile(model, mode=compile_mode) 
-        print(f'torch.compile enabled with mode="{compile_mode}"')
+        device = torch.device('cuda')
+        model = model.to(device)
+        # Apply channels_last memory format to convert Conv2d weights
+        for module in model.modules():
+            if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+                if module.weight.dim() == 4:  
+                    module.weight.data = module.weight.data.contiguous(memory_format=torch.channels_last)
+        model = torch.compile(model, mode=compile_mode)
+        print(f'torch.compile enabled with mode="{compile_mode}" and channels_last memory format on {device}')
+        
+        # Store flag that this model uses channels_last (for inference)
+        uses_channels_last = True
     else:
         if enable_compile:
             print('torch.compile requires PyTorch 2.0+ and CUDA. Proceeding without compilation.')
+        uses_channels_last = False
     
     # Enable cuDNN autotuner for better performance
     torch.backends.cudnn.benchmark = True
+    
+    # Register buffer to store the channels_last flag
+    if not hasattr(model, '_uses_channels_last_flag'):
+        model.register_buffer('_uses_channels_last_flag', torch.tensor(uses_channels_last, dtype=torch.bool))
     
     return model
