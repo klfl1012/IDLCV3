@@ -10,7 +10,6 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, Learning
 from pytorch_lightning.profilers import PyTorchProfiler
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 from torchvision.utils import make_grid
-import segmentation_models_pytorch as smp
 
 
 class LitSegmenter(pl.LightningModule):
@@ -29,7 +28,8 @@ class LitSegmenter(pl.LightningModule):
         model_name: Optional[str] = None,
         model_config: Optional[dict] = None,
         criterion_class: Optional[Type[nn.Module]] = None,
-        criterion_kwargs: Optional[dict] = None
+        criterion_kwargs: Optional[dict] = None,
+        precision: str = '32',  # Add precision parameter
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model', 'criterion'])
@@ -320,7 +320,7 @@ def get_segm_trainer(
         profiler=profiler,
         gradient_clip_val=gradient_clip_val,
         accumulate_grad_batches=accumulate_grad_batches,
-        precision='16-mixed' if use_mixed_precision and torch.cuda.is_available() else 32
+        precision='bf16-mixed' if use_mixed_precision and torch.cuda.is_available() else 32
     )
 
     return trainer

@@ -153,6 +153,10 @@ def _train_single_experiment(
     # Create output directory for this experiment
     exp_outdir = args.outdir / f'_{criterion_name}'
     
+    # Determine precision
+    # precision = 'bf16-mixed' if args.use_mixed_precision and torch.cuda.is_available() else '32'
+    precision = '16-mixed' if args.use_mixed_precision and torch.cuda.is_available() else '32'
+    
     # Create LitSegmenter with full config
     litmodel = LitSegmenter(
         model=model,
@@ -167,6 +171,7 @@ def _train_single_experiment(
         model_config=model_config,
         criterion_class=type(criterion),
         criterion_kwargs=crit_config,
+        precision=precision,  
     )
     
     trainer = get_segm_trainer(

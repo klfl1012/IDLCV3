@@ -12,12 +12,12 @@ import segmentation_models_pytorch as smp
 from torch.utils.data import DataLoader
 
 from dataloader import build_segmentation_dataloader
-from model_registry import available_models, build_model, rebuild_model_from_config
+from model_registry import rebuild_model_from_config
 from trainer import LitSegmenter
 
 
 def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> nn.Module:
-    """
+    '''
     Rebuild criterion from checkpoint hyperparameters using dictionary mapping.
     
     Args:
@@ -26,7 +26,7 @@ def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> 
         
     Returns:
         Reconstructed criterion module
-    """
+    '''
     if criterion_class is None:
         return nn.BCEWithLogitsLoss()
     
@@ -60,7 +60,7 @@ def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> 
             return factory(criterion_kwargs)
     
     # Fallback
-    print(f"Unknown criterion '{criterion_name}', using BCE as fallback")
+    print(f'Unknown criterion "{criterion_name}", using BCE as fallback')
     return nn.BCEWithLogitsLoss()
 
 
@@ -75,25 +75,44 @@ def _evaluate_segmentation(
     resize_to: Optional[tuple[int, int]] = None,
     device: Optional[torch.device] = None,
     save_path: Optional[Path] = None,
+    precision: Optional[str] = None,
 ) -> dict:
     
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Using device: {device}')
 
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f'Checkpoint not found at "{checkpoint_path}".')
 
     # Load checkpoint to inspect hyperparameters
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     hparams = checkpoint['hyper_parameters']
+
+    # Automatically detect precision used in training from checkpoint if not provided
+    if precision is None:
+        precision = hparams.get('precision', '32')
+        print(f'Auto-detected precision from checkpoint: {precision}')
     
-    print(f"Loading model from checkpoint:")
-    print(f"  Model: {hparams.get('model_name', 'unknown')}")
-    print(f"  Dataset: {hparams.get('model_config', {}).get('dataset', 'unknown')}")
-    print(f"  Criterion: {hparams.get('criterion_class', 'unknown')}")
+    # Check if model was trained with channels_last memory format (compiled models)
+    uses_channels_last = hparams.get('model_config', {}).get('uses_channels_last', False)
+    
+    print(f'Loading model from checkpoint:')
+    print(f'  Model: {hparams.get("model_name", "unknown")}')
+    print(f'  Dataset: {hparams.get("model_config", {}).get("dataset", "unknown")}')
+    print(f'  Criterion: {hparams.get("criterion_class", "unknown")}')
+    print(f'  Precision: {precision}')
+    print(f'  Channels Last: {uses_channels_last}')
+
+    # Simplified precision check - supports both FP16 (V100) and BF16 (A100+)
+    use_amp = precision in ('16-mixed', 'bf16-mixed') and device.type == 'cuda'
+    amp_dtype = torch.bfloat16 if precision == 'bf16-mixed' else torch.float16
+    
+    if use_amp:
+        torch.backends.cudnn.benchmark = True
+        print(f'Using mixed precision inference: {precision}')
 
     # Rebuild model from saved config
-    from model_registry import rebuild_model_from_config
     model = rebuild_model_from_config(hparams['model_config'])
     
     # Rebuild criterion from saved config
@@ -107,11 +126,20 @@ def _evaluate_segmentation(
         checkpoint_path=str(checkpoint_path),
         model=model,
         criterion=criterion,
-        optimizer_class=torch.optim.Adam,
+        optimizer_class=torch.optim.AdamW,
         optimizer_kwargs={'lr': 1e-4},
     )
 
     lit_model.to(device)
+
+    # Apply channels_last memory format to convert Conv2d weights
+    if uses_channels_last and device.type == 'cuda':
+        for module in lit_model.modules():
+            if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+                if module.weight.dim() == 4: 
+                    module.weight.data = module.weight.data.contiguous(memory_format=torch.channels_last)
+        print('Applied channels_last memory format for inference')
+    
     lit_model.eval()
 
     # Build dataloader
@@ -145,17 +173,35 @@ def _evaluate_segmentation(
     for imgs, masks in test_loader:
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
-
-        logits = lit_model(imgs)
         
-        if lit_model.num_classes == 2:
-            if logits.dim() == 4:
-                logits = logits.squeeze(1)
-            loss = lit_model.criterion(logits, masks.float())
-            preds = (torch.sigmoid(logits) > 0.5).long()
+        # Apply channels_last to input if model uses it
+        if uses_channels_last and device.type == 'cuda':
+            imgs = imgs.contiguous(memory_format=torch.channels_last)
+
+        # Use autocast for mixed precision if enabled
+        if use_amp:
+            with torch.autocast(device_type='cuda', dtype=amp_dtype):
+                logits = lit_model(imgs)
+                
+                if lit_model.num_classes == 2:
+                    if logits.dim() == 4:
+                        logits = logits.squeeze(1)
+                    loss = lit_model.criterion(logits, masks.float())
+                    preds = (torch.sigmoid(logits) > 0.5).long()
+                else:
+                    loss = lit_model.criterion(logits, masks)
+                    preds = logits.argmax(dim=1)
         else:
-            loss = lit_model.criterion(logits, masks)
-            preds = logits.argmax(dim=1)
+            logits = lit_model(imgs)
+            
+            if lit_model.num_classes == 2:
+                if logits.dim() == 4:
+                    logits = logits.squeeze(1)
+                loss = lit_model.criterion(logits, masks.float())
+                preds = (torch.sigmoid(logits) > 0.5).long()
+            else:
+                loss = lit_model.criterion(logits, masks)
+                preds = logits.argmax(dim=1)
 
         for metric in metrics.values():
             metric(preds, masks)
@@ -190,6 +236,7 @@ def _evaluate_segmentation(
 
     return results
 
+
 def _build_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Evaluate trained segmentation model on DRIVE or PH2 dataset.')
     parser.add_argument('--checkpoint', type=Path, required=True, help='Path to trained Lightning checkpoint (.ckpt)')
@@ -200,8 +247,8 @@ def _build_args() -> argparse.Namespace:
     parser.add_argument('--num-workers', type=int, default=4, help='DataLoader worker count')
     parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('HEIGHT', 'WIDTH'), help='Resize images to (H, W). Example: --resize 572 572')
     parser.add_argument('--metrics-out', type=Path, default=None, help='Optional path to save evaluation metrics as JSON')
+    parser.add_argument('--precision', type=str, choices=['32', '16-mixed', 'bf16-mixed'], default=None, help='Precision mode for evaluation (32, 16-mixed, bf16-mixed). Auto-detected from checkpoint if not specified.')
     return parser.parse_args()
-
 
 
 def main():
@@ -229,13 +276,13 @@ def main():
     print('EVALUATION RESULTS')
     print('='*60)
     print(f'Dataset:      {args.dataset.upper()} ({args.split} split)')
-    print(f'Samples:      {metrics["samples"]}')
-    print(f'Loss:         {metrics["loss"]:.4f}')
-    print(f'IoU:          {metrics["iou"]:.4f}')
-    print(f'Accuracy:     {metrics["accuracy"]:.4f} ({metrics["accuracy"]*100:.2f}%)')
-    print(f'Sensitivity:  {metrics["sensitivity"]:.4f}')
-    print(f'Specificity:  {metrics["specificity"]:.4f}')
-    print(f'Precision:    {metrics["precision"]:.4f}')
+    print(f'Samples:      {metrics['samples']}')
+    print(f'Loss:         {metrics['loss']:.4f}')
+    print(f'IoU:          {metrics['iou']:.4f}')
+    print(f'Accuracy:     {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)')
+    print(f'Sensitivity:  {metrics['sensitivity']:.4f}')
+    print(f'Specificity:  {metrics['specificity']:.4f}')
+    print(f'Precision:    {metrics['precision']:.4f}')
     print('='*60)
     
     if args.metrics_out is not None:
