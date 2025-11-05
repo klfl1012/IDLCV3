@@ -98,33 +98,10 @@ def _get_criterion(name: str, criterion_kwargs: dict) -> tuple[nn.Module, str, d
             'BCEWithLogitsLoss', 
             {'pos_weight': 10.0}
         ),
-        'iou': (
-            lambda from_logits=True: IOULoss(from_logits=from_logits),
-            'IOULoss',
-            {'from_logits': True}
-        ),
-        'dice': (
-            lambda from_logits=True: DiceLoss(from_logits=from_logits), 'DiceLoss', {'from_logits': True}
-        ),
         'focal': (
             lambda alpha=1.0, gamma=2.0, epsilon=1e-7, from_logits=True: FocalLoss(alpha=alpha, gamma=gamma, epsilon=epsilon, from_logits=from_logits),
             'FocalLoss',
             {'alpha': 1.0, 'gamma': 2.0, 'epsilon': 1e-7 , 'from_logits': True}
-        ),
-        'lovasz': (
-            lambda from_logits=True: LovaszLoss(from_logits=from_logits),
-            'LovaszLoss',
-            {'from_logits': True}
-        ),
-        'lovasz_hinge': (
-            lambda from_logits=True: LovaszHingeLoss(from_logits=from_logits),
-            'LovaszHingeLoss',
-            {'from_logits': True}
-        ),
-        'dice_bce': (
-            lambda alpha=0.5, from_logits=True: CombinedLoss(alpha=alpha, from_logits=from_logits),
-            'DiceBCELoss',
-            {'from_logits': True, 'alpha': 0.5}
         ),
     }
 
@@ -249,10 +226,7 @@ def main():
         experiments = [
             {'name': 'bce', 'kwargs': {}},
             {'name': 'weighted_bce', 'kwargs': {'pos_weight': 10.0}},
-            {'name': 'dice', 'kwargs': {}},
             {'name': 'focal', 'kwargs': {}},
-            {'name': 'lovasz', 'kwargs': {}},
-            {'name': 'dice_bce', 'kwargs': {}},
         ]
         
         for exp in experiments:

@@ -124,21 +124,23 @@ class LitSegmenter(pl.LightningModule):
     ) -> torch.Tensor:
         
         outputs = self._compute_loss_and_metrics(batch, 'train')
-        self.log('train_loss', outputs['loss'], on_step=False, on_epoch=True, prog_bar=True, batch_size=batch[0].size(0))
-        self.log('train_iou', self.train_iou, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_acc', self.train_acc, on_step=False, on_epoch=True)
-        self.log('train_sensitivity', self.train_sensitivity, on_step=False, on_epoch=True)
-        self.log('train_specificity', self.train_specificity, on_step=False, on_epoch=True)
-        self.log('train_precision', self.train_precision, on_step=False, on_epoch=True)
+        # Log with sync_dist=False to reduce overhead in distributed training
+        self.log('train_loss', outputs['loss'], on_step=False, on_epoch=True, prog_bar=True, batch_size=batch[0].size(0), sync_dist=False)
+        self.log('train_iou', self.train_iou, on_step=False, on_epoch=True, prog_bar=True, sync_dist=False)
+        self.log('train_acc', self.train_acc, on_step=False, on_epoch=True, sync_dist=False)
+        self.log('train_sensitivity', self.train_sensitivity, on_step=False, on_epoch=True, sync_dist=False)
+        self.log('train_specificity', self.train_specificity, on_step=False, on_epoch=True, sync_dist=False)
+        self.log('train_precision', self.train_precision, on_step=False, on_epoch=True, sync_dist=False)
 
         self._train_epoch_outputs.append(outputs)
 
-        if batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-            self._train_vis_batch = {
-                'imgs': outputs['imgs'][:4].detach().cpu(),
-                'masks': outputs['masks'][:4].detach().cpu(),
-                'preds': outputs['preds'][:4].detach().cpu(),
-            }
+        # Image logging disabled to save I/O
+        # if batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+        #     self._train_vis_batch = {
+        #         'imgs': outputs['imgs'][:4].detach().cpu(),
+        #         'masks': outputs['masks'][:4].detach().cpu(),
+        #         'preds': outputs['preds'][:4].detach().cpu(),
+        #     }
         
         return outputs['loss']
     
@@ -150,21 +152,23 @@ class LitSegmenter(pl.LightningModule):
     ) -> torch.Tensor:
         
         outputs = self._compute_loss_and_metrics(batch, 'val')
-        self.log('val_loss', outputs['loss'], on_step=False, on_epoch=True, prog_bar=True, batch_size=batch[0].size(0))
-        self.log('val_iou', self.val_iou, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_acc', self.val_acc, on_step=False, on_epoch=True)
-        self.log('val_sensitivity', self.val_sensitivity, on_step=False, on_epoch=True)
-        self.log('val_specificity', self.val_specificity, on_step=False, on_epoch=True)
-        self.log('val_precision', self.val_precision, on_step=False, on_epoch=True)
+        # Log with sync_dist=False to reduce overhead in distributed training
+        self.log('val_loss', outputs['loss'], on_step=False, on_epoch=True, prog_bar=True, batch_size=batch[0].size(0), sync_dist=False)
+        self.log('val_iou', self.val_iou, on_step=False, on_epoch=True, prog_bar=True, sync_dist=False)
+        self.log('val_acc', self.val_acc, on_step=False, on_epoch=True, sync_dist=False)
+        self.log('val_sensitivity', self.val_sensitivity, on_step=False, on_epoch=True, sync_dist=False)
+        self.log('val_specificity', self.val_specificity, on_step=False, on_epoch=True, sync_dist=False)
+        self.log('val_precision', self.val_precision, on_step=False, on_epoch=True, sync_dist=False)
         
         self._val_epoch_outputs.append(outputs['loss'].detach())
         
-        if batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-            self._val_vis_batch = {
-                'imgs': outputs['imgs'][:4].detach().cpu(), 
-                'preds': outputs['preds'][:4].detach().cpu(),
-                'masks': outputs['masks'][:4].detach().cpu(),
-            }
+        # Image logging disabled to save I/O
+        # if batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+        #     self._val_vis_batch = {
+        #         'imgs': outputs['imgs'][:4].detach().cpu(), 
+        #         'preds': outputs['preds'][:4].detach().cpu(),
+        #         'masks': outputs['masks'][:4].detach().cpu(),
+        #     }
         
         return outputs['loss']
     
@@ -180,9 +184,10 @@ class LitSegmenter(pl.LightningModule):
             self.history['train_precision'].append(self.train_precision.compute().item())
             self._train_epoch_outputs.clear()
 
-        if hasattr(self, '_train_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-            self._log_segmentations_imgs(self._train_vis_batch, 'train')
-            delattr(self, '_train_vis_batch')
+        # Image logging disabled
+        # if hasattr(self, '_train_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+        #     self._log_segmentations_imgs(self._train_vis_batch, 'train')
+        #     delattr(self, '_train_vis_batch')
 
     
     def on_validation_epoch_end(self) -> None:
@@ -196,9 +201,10 @@ class LitSegmenter(pl.LightningModule):
             self.history['val_precision'].append(self.val_precision.compute().item())
             self._val_epoch_outputs.clear()
 
-        if hasattr(self, '_val_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-            self._log_segmentations_imgs(self._val_vis_batch, 'val')
-            delattr(self, '_val_vis_batch')
+        # Image logging disabled
+        # if hasattr(self, '_val_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+        #     self._log_segmentations_imgs(self._val_vis_batch, 'val')
+        #     delattr(self, '_val_vis_batch')
 
     def _log_segmentations_imgs(
         self,
@@ -216,12 +222,13 @@ class LitSegmenter(pl.LightningModule):
         grid = torch.cat([imgs, preds_viz.repeat(1, 3, 1, 1), masks_viz.repeat(1, 3, 1, 1)], dim=0)
         grid = make_grid(grid, nrow=len(imgs), normalize=True, value_range=(0, 1))
 
-        if isinstance(self.logger, TensorBoardLogger):
-            self.logger.experiment.add_image(
-                f'{stage}_preds',
-                grid,
-                global_step=self.current_epoch
-            )
+        # TensorBoard image logging (disabled)
+        # if isinstance(self.logger, TensorBoardLogger):
+        #     self.logger.experiment.add_image(
+        #         f'{stage}_preds',
+        #         grid,
+        #         global_step=self.current_epoch
+        #     )
         
     def configure_optimizers(self) -> dict[str, Any]:
         optimizer = self.optimizer_class(self.parameters(), **self.optimizer_kwargs)
@@ -265,10 +272,10 @@ def get_segm_trainer(
         ModelCheckpoint(
             monitor='val_iou',
             dirpath=outdir_path / 'checkpoints',
-            filename=f'{experiment_name}_{{epoch:02d}}_{{val_iou:.4f}}',
-            save_top_k=3,
+            filename=f'{experiment_name}_best',  # Fixed filename (gets overwritten)
+            save_top_k=1,  # Only save THE best model
             mode='max',
-            save_last=True,
+            save_last=False,  # Don't save last checkpoint to save space
         ),
         EarlyStopping(
             monitor='val_loss',
@@ -280,10 +287,11 @@ def get_segm_trainer(
     ]
 
     loggers = [
-        TensorBoardLogger(
-            save_dir=outdir_path / 'logs',
-            name=experiment_name,
-        ),
+        # TensorBoard Logger (disabled to save space and I/O)
+        # TensorBoardLogger(
+        #     save_dir=outdir_path / 'logs',
+        #     name=experiment_name,
+        # ),
         CSVLogger(
             save_dir=outdir_path / 'logs',
             name=experiment_name,
