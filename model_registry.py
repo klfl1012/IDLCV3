@@ -43,7 +43,7 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = {
             'activation': nn.SiLU,
             'norm_type': 'batch',
             'dropout': 0.1,
-            'use_skip_connections': False,
+            'use_skip_conn': False,
         },
     ),
     'unet': ModelSpec(
