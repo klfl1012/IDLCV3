@@ -16,6 +16,41 @@ from model_registry import rebuild_model_from_config
 from trainer import LitSegmenter
 
 
+class DiceCoefficient(tm.Metric):
+    """
+    Manual implementation of Dice coefficient (F1 score) for segmentation.
+    Dice = 2 * |X ∩ Y| / (|X| + |Y|)
+    """
+    def __init__(self, num_classes: int = 2, smooth: float = 1e-6):
+        super().__init__()
+        self.num_classes = num_classes
+        self.smooth = smooth
+        self.add_state("dice_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("count", default=torch.tensor(0), dist_reduce_fx="sum")
+
+    def update(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
+        # Ensure same shape
+        if preds.shape != targets.shape:
+            raise ValueError(f"Predictions shape {preds.shape} != targets shape {targets.shape}")
+        
+        # Flatten tensors
+        preds_flat = preds.flatten()
+        targets_flat = targets.flatten()
+        
+        # Calculate intersection and union
+        intersection = torch.sum(preds_flat * targets_flat)
+        union = torch.sum(preds_flat) + torch.sum(targets_flat)
+        
+        # Dice coefficient
+        dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        
+        self.dice_sum += dice
+        self.count += 1
+
+    def compute(self) -> torch.Tensor:
+        return self.dice_sum / self.count if self.count > 0 else torch.tensor(0.0)
+
+
 def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> nn.Module:
     '''
     Rebuild criterion from checkpoint hyperparameters using dictionary mapping.
@@ -163,6 +198,7 @@ def _evaluate_segmentation(
         'sensitivity': tm.Recall(task=task, num_classes=lit_model.num_classes).to(device),
         'specificity': tm.Specificity(task=task, num_classes=lit_model.num_classes).to(device),
         'precision': tm.Precision(task=task, num_classes=lit_model.num_classes).to(device),
+        'dice': DiceCoefficient(num_classes=lit_model.num_classes).to(device),
     }
 
     total_loss = 0.0
@@ -217,6 +253,7 @@ def _evaluate_segmentation(
         'sensitivity': metrics['sensitivity'].compute().item(),
         'specificity': metrics['specificity'].compute().item(),
         'precision': metrics['precision'].compute().item(),
+        'dice': metrics['dice'].compute().item(),
         'samples': total_samples,
     }
 
@@ -283,6 +320,7 @@ def main():
     print(f'Sensitivity:  {metrics['sensitivity']:.4f}')
     print(f'Specificity:  {metrics['specificity']:.4f}')
     print(f'Precision:    {metrics['precision']:.4f}')
+    print(f'Dice:         {metrics['dice']:.4f}')
     print('='*60)
     
     if args.metrics_out is not None:
