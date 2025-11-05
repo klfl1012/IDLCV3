@@ -1,21 +1,20 @@
+from __future__ import annotations
 import argparse
 from pathlib import Path
 import ast
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import segmentation_models_pytorch as smp
-from torch.utils.data import dataloader
 from dataloader import *
 from model_registry import available_models, build_model
 from trainer import get_segm_trainer, LitSegmenter
-import torchmetrics as tm
+from losses import IOULoss, CombinedLoss, DiceLoss, FocalLoss, LovaszLoss, LovaszHingeLoss
 
 
 def _build_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train segmentation model with optional ablation study.')
     parser.add_argument('--model', type=str, required=True, choices=available_models())
-    parser.add_argument('--criterion', type=str, default='bce', choices=['bce', 'weighted_bce', 'dice', 'focal', 'lovasz', 'dice_bce'], help='Loss criterion to use.')
+    parser.add_argument('--criterion', type=str, default='bce', choices=['bce', 'weighted_bce', 'dice', 'focal', 'lovasz', 'dice_bce', 'iou', 'lovasz_hinge'], help='Loss criterion to use.')
     parser.add_argument('--criterion_kwargs', type=str, default='{}', help='Criterion keyword arguments as a dictionary string (e.g., \'{"pos_weight": 10.0}\').')
     parser.add_argument('--model_kwargs', type=str, default='{}', help='Model keyword arguments as a dictionary string.')
     parser.add_argument('--dataset', type=str, required=True, choices=['drive', 'ph2'])
@@ -89,35 +88,55 @@ def _get_scheduler_class(name: str) -> type[torch.optim.lr_scheduler._LRSchedule
 
 
 def _get_criterion(name: str, criterion_kwargs: dict) -> tuple[nn.Module, str, dict]:
-    class CombinedLoss(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.dice = smp.losses.DiceLoss(mode='binary', from_logits=True)
-            self.bce = nn.BCEWithLogitsLoss()
-        
-        def forward(self, logits, targets):
-            return 0.5 * self.dice(logits, targets) + 0.5 * self.bce(logits, targets)
-    
-    # Criterion mapping: name -> (factory_function, criterion_name, default_config)
+
     criterion_map = {
-        'bce': (lambda kwargs: nn.BCEWithLogitsLoss(), 'BCEWithLogitsLoss', {}),
-        'weighted_bce': (lambda kwargs: nn.BCEWithLogitsLoss(pos_weight=torch.tensor([kwargs.get('pos_weight', 10.0)])), 'BCEWithLogitsLoss', {'pos_weight': 10.0}),  # Will be overridden if provided in kwargs
-        'dice': (lambda kwargs: smp.losses.DiceLoss(mode='binary', from_logits=True), 'DiceLoss', {'mode': 'binary', 'from_logits': True}),
-        'focal': (lambda kwargs: smp.losses.FocalLoss(mode='binary'), 'FocalLoss', {'mode': 'binary'}),
-        'lovasz': (lambda kwargs: smp.losses.LovaszLoss(mode='binary', from_logits=True), 'LovaszLoss', {'mode': 'binary', 'from_logits': True}),
-        'dice_bce': (lambda kwargs: CombinedLoss(), 'DiceBCELoss', {'mode': 'binary', 'from_logits': True}),
+        'bce': (
+            lambda: nn.BCEWithLogitsLoss(), 'BCEWithLogitsLoss', {}
+        ),
+        'weighted_bce': (
+            lambda pos_weight=10.0: nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight])), 
+            'BCEWithLogitsLoss', 
+            {'pos_weight': 10.0}
+        ),
+        'iou': (
+            lambda from_logits=True: IOULoss(from_logits=from_logits),
+            'IOULoss',
+            {'from_logits': True}
+        ),
+        'dice': (
+            lambda from_logits=True: DiceLoss(from_logits=from_logits), 'DiceLoss', {'from_logits': True}
+        ),
+        'focal': (
+            lambda alpha=1.0, gamma=2.0, epsilon=1e-7, from_logits=True: FocalLoss(alpha=alpha, gamma=gamma, epsilon=epsilon, from_logits=from_logits),
+            'FocalLoss',
+            {'alpha': 1.0, 'gamma': 2.0, 'epsilon': 1e-7 , 'from_logits': True}
+        ),
+        'lovasz': (
+            lambda from_logits=True: LovaszLoss(from_logits=from_logits),
+            'LovaszLoss',
+            {'from_logits': True}
+        ),
+        'lovasz_hinge': (
+            lambda from_logits=True: LovaszHingeLoss(from_logits=from_logits),
+            'LovaszHingeLoss',
+            {'from_logits': True}
+        ),
+        'dice_bce': (
+            lambda alpha=0.5, from_logits=True: CombinedLoss(alpha=alpha, from_logits=from_logits),
+            'DiceBCELoss',
+            {'from_logits': True, 'alpha': 0.5}
+        ),
     }
-    
+
     name_lower = name.lower()
     if name_lower not in criterion_map:
         raise ValueError(f'Unknown criterion "{name}". Supported: {list(criterion_map.keys())}')
     
     factory, criterion_name, default_config = criterion_map[name_lower]
     
-    # Merge default config with user-provided kwargs for weighted_bce
     final_config = {**default_config, **criterion_kwargs}
     
-    return factory(criterion_kwargs), criterion_name, final_config
+    return factory(**final_config), criterion_name, final_config
 
 
 def _train_single_experiment(
@@ -128,12 +147,12 @@ def _train_single_experiment(
     val_loader,
 ) -> None:
     """Train a single experiment with given criterion."""
-    
-    print(f"\n{'='*60}")
-    print(f"Training with {criterion_name} loss")
-    print(f"Configuration: {criterion_kwargs}")
-    print(f"{'='*60}\n")
-    
+
+    print(f'\n{"="*60}')
+    print(f'Training with {criterion_name} loss')
+    print(f'Configuration: {criterion_kwargs}')
+    print(f'{"="*60}\n')
+
     # Build model with config
     model, model_config = build_model(
         name=args.model,
@@ -157,7 +176,6 @@ def _train_single_experiment(
     # precision = 'bf16-mixed' if args.use_mixed_precision and torch.cuda.is_available() else '32'
     precision = '16-mixed' if args.use_mixed_precision and torch.cuda.is_available() else '32'
     
-    # Create LitSegmenter with full config
     litmodel = LitSegmenter(
         model=model,
         criterion=criterion,
