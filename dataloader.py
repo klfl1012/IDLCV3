@@ -131,20 +131,21 @@ def _split_samples(
 	n_val = int(n_total * val_ratio)
 	n_test = n_total - n_train - n_val
 
+	indices = list(range(n_total))
 	generator = torch.Generator().manual_seed(seed)
-	train_samples, val_samples, test_samples = random_split(
-		samples,
-		[n_train, n_val, n_test],
-		generator=generator
-	)
+	shuffled_indices = torch.randperm(n_total, generator=generator).tolist()
+
+	train_indices = shuffled_indices[:n_train]
+	val_indices = shuffled_indices[n_train:n_train + n_val]
+	test_indices = shuffled_indices[n_train + n_val:]
 	
 	split_lower = split.lower()
 	if split_lower in {"train", "training"}:
-		return [samples[i] for i in train_samples.indices]
+		return [samples[i] for i in train_indices]
 	elif split_lower in {"val", "validation"}:
-		return [samples[i] for i in val_samples.indices]
+		return [samples[i] for i in val_indices]
 	elif split_lower in {"test", "testing"}:
-		return [samples[i] for i in test_samples.indices]
+		return [samples[i] for i in test_indices]
 	else:
 		raise ValueError(f"Unknown split {split}.")
 	
@@ -231,8 +232,12 @@ class SegmentationDataset(Dataset):
 		image_tensor = self.image_transform(image)
 		mask_tensor = self.mask_transform(mask)
 
+		# Type assertions to ensure tensors after transforms
+		assert isinstance(image_tensor, torch.Tensor), "image_transform must return a Tensor"
+		assert isinstance(mask_tensor, torch.Tensor), "mask_transform must return a Tensor"
+
 		# Ensure mask is (H, W) and binary/integer class labels.
-		if mask_tensor.ndim == 3:
+		if mask_tensor.ndim == 3: 
 			mask_tensor = mask_tensor.squeeze(0)
 		mask_tensor = (mask_tensor >= self.mask_threshold).long()
 
@@ -243,18 +248,18 @@ class SegmentationDataset(Dataset):
 
 		# Horizontal flip
 		if random.random() < 0.5:
-			image = F.hflip(image)
-			mask = F.hflip(mask)
+			image = F.hflip(image)  # type: ignore[assignment]
+			mask = F.hflip(mask)  # type: ignore[assignment]
 
 		# Vertical flip
 		if random.random() < 0.5:
-			image = F.vflip(image)
-			mask = F.vflip(mask)
+			image = F.vflip(image)  # type: ignore[assignment]
+			mask = F.vflip(mask)  # type: ignore[assignment]
 
 		# Brightness jitter (image only)
 		if self.brightness_delta > 0:
 			factor = 1.0 + random.uniform(-self.brightness_delta, self.brightness_delta)
-			image = F.adjust_brightness(image, max(factor, 0.0))
+			image = F.adjust_brightness(image, max(factor, 0.0))  # type: ignore[assignment]
 
 		return image, mask
 
