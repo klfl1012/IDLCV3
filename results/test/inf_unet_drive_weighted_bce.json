@@ -1,0 +1,18 @@
+{
+  "metrics": {
+    "loss": 2.3604118824005127,
+    "iou": 0.579310417175293,
+    "accuracy": 0.9381460547447205,
+    "sensitivity": 0.8228887319564819,
+    "specificity": 0.9514536261558533,
+    "precision": 0.6618313193321228,
+    "dice": 0.7336245179176331,
+    "samples": 3
+  },
+  "checkpoint": "unet_drive_abliation_study/_weighted_bce/checkpoints/drive_weighted_bce_best.ckpt",
+  "model": "unet",
+  "dataset": "drive",
+  "split": "test",
+  "batch_size": 4,
+  "resize_to": null
+}

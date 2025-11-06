@@ -8,7 +8,7 @@ import torch.nn as nn
 from dataloader import *
 from model_registry import available_models, build_model
 from trainer import get_segm_trainer, LitSegmenter
-from losses import IOULoss, CombinedLoss, DiceLoss, FocalLoss, LovaszLoss, LovaszHingeLoss
+from losses import FocalLoss
 
 
 def _build_args() -> argparse.Namespace:

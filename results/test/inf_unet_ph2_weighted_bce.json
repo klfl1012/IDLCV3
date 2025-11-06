@@ -1,0 +1,18 @@
+{
+  "metrics": {
+    "loss": 1.1371360840896765,
+    "iou": 0.7575362324714661,
+    "accuracy": 0.9136786460876465,
+    "sensitivity": 0.8719379901885986,
+    "specificity": 0.9323709607124329,
+    "precision": 0.8523707985877991,
+    "dice": 0.8429247140884399,
+    "samples": 30
+  },
+  "checkpoint": "unet_ph2_abliation_study/_weighted_bce/checkpoints/ph2_weighted_bce_best.ckpt",
+  "model": "unet",
+  "dataset": "ph2",
+  "split": "test",
+  "batch_size": 1,
+  "resize_to": null
+}
