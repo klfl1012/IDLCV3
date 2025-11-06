@@ -132,6 +132,11 @@ class DecoderBlock(nn.Module):
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = self.upsample(x)
         if self.use_skip_conn and skip is not None:
+            if x.shape[2] != skip.shape[2] or x.shape[3] != skip.shape[3]:
+                diff_h = skip.shape[2] - x.shape[2]
+                diff_w = skip.shape[3] - x.shape[3]
+                x = nn.functional.pad(x, [diff_w // 2, diff_w - diff_w // 2,
+                                          diff_h // 2, diff_h - diff_h // 2])
             x = torch.cat([skip, x], dim=1)
         return self.conv(x)
 

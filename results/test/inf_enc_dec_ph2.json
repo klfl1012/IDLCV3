@@ -1,0 +1,18 @@
+{
+  "metrics": {
+    "loss": 2.005009889602661,
+    "iou": 0.1487824022769928,
+    "accuracy": 0.4315129220485687,
+    "sensitivity": 0.9599652290344238,
+    "specificity": 0.37049803137779236,
+    "precision": 0.14971134066581726,
+    "dice": 0.25902625918388367,
+    "samples": 3
+  },
+  "checkpoint": "enc_dec_ph2/_bce/checkpoints/ph2_bce_best.ckpt",
+  "model": "encoder_decoder",
+  "dataset": "drive",
+  "split": "test",
+  "batch_size": 4,
+  "resize_to": null
+}

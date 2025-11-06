@@ -14,42 +14,8 @@ from torch.utils.data import DataLoader
 from dataloader import build_segmentation_dataloader
 from model_registry import rebuild_model_from_config
 from trainer import LitSegmenter
-
-
-class DiceCoefficient(tm.Metric):
-    """
-    Manual implementation of Dice coefficient (F1 score) for segmentation.
-    Dice = 2 * |X ∩ Y| / (|X| + |Y|)
-    """
-    def __init__(self, num_classes: int = 2, smooth: float = 1e-6):
-        super().__init__()
-        self.num_classes = num_classes
-        self.smooth = smooth
-        self.add_state("dice_sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("count", default=torch.tensor(0), dist_reduce_fx="sum")
-
-    def update(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
-        # Ensure same shape
-        if preds.shape != targets.shape:
-            raise ValueError(f"Predictions shape {preds.shape} != targets shape {targets.shape}")
-        
-        # Flatten tensors
-        preds_flat = preds.flatten()
-        targets_flat = targets.flatten()
-        
-        # Calculate intersection and union
-        intersection = torch.sum(preds_flat * targets_flat)
-        union = torch.sum(preds_flat) + torch.sum(targets_flat)
-        
-        # Dice coefficient
-        dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
-        
-        self.dice_sum += dice
-        self.count += 1
-
-    def compute(self) -> torch.Tensor:
-        return self.dice_sum / self.count if self.count > 0 else torch.tensor(0.0)
-
+import torch.nn.functional as F
+from losses import *
 
 def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> nn.Module:
     '''
@@ -66,37 +32,132 @@ def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> 
         return nn.BCEWithLogitsLoss()
     
     criterion_name = criterion_class.__name__ if hasattr(criterion_class, '__name__') else str(criterion_class)
+    criterion_name_lower = criterion_name.lower() 
     
-    # Combined loss helper class
-    class CombinedLoss(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.dice = smp.losses.DiceLoss(mode='binary', from_logits=True)
-            self.bce = nn.BCEWithLogitsLoss()
-        
-        def forward(self, logits, targets):
-            return 0.5 * self.dice(logits, targets) + 0.5 * self.bce(logits, targets)
+    if 'bcewithlogitsloss' in criterion_name_lower:
+        pos_weight = criterion_kwargs.get('pos_weight', None)
+        if pos_weight is not None:
+            if not isinstance(pos_weight, torch.Tensor):
+                pos_weight = torch.tensor([float(pos_weight)])
+            print(f'Reconstructing BCEWithLogitsLoss with pos_weight={pos_weight.item():.4f}')
+            return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        else:
+            print('Reconstructing BCEWithLogitsLoss (no pos_weight)')
+            return nn.BCEWithLogitsLoss()
     
     # Criterion mapping with factory functions
     criterion_map = {
-        'BCEWithLogitsLoss': lambda kwargs: nn.BCEWithLogitsLoss(
-            pos_weight=torch.tensor([kwargs['pos_weight']]) if 'pos_weight' in kwargs else None
-        ),
-        'DiceLoss': lambda kwargs: smp.losses.DiceLoss(**kwargs),
-        'FocalLoss': lambda kwargs: smp.losses.FocalLoss(**kwargs),
-        'LovaszLoss': lambda kwargs: smp.losses.LovaszLoss(**kwargs),
-        'DiceBCELoss': lambda kwargs: CombinedLoss(),
-        'CombinedLoss': lambda kwargs: CombinedLoss(),
+        'focal': lambda alpha=1.0, gamma=2.0, epsilon=1e-7, from_logits=True: FocalLoss(alpha=alpha, gamma=gamma, epsilon=epsilon, from_logits=from_logits),
     }
     
     # Find matching criterion
     for key, factory in criterion_map.items():
         if key in criterion_name:
-            return factory(criterion_kwargs)
+            return factory(criterion_kwargs) # pyright: ignore[reportArgumentType]
     
     # Fallback
     print(f'Unknown criterion "{criterion_name}", using BCE as fallback')
     return nn.BCEWithLogitsLoss()
+
+
+@torch.inference_mode()
+def _sliding_window_inference(
+    model: nn.Module,
+    image: torch.Tensor,
+    patch_size: tuple[int, int],
+    overlap: int = 64,
+    device: Optional[torch.device] = None,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    uses_channels_last: bool = False,
+) -> torch.Tensor:
+    """
+    Sliding window inference for arbitrary image sizes.
+    
+    Args:
+        model: The neural network model
+        image: Input image tensor [1, C, H, W]
+        patch_size: Size of patches to process (H, W)
+        overlap: Overlap between patches in pixels
+        device: Device to run inference on
+        use_amp: Whether to use mixed precision
+        amp_dtype: Data type for mixed precision
+        uses_channels_last: Whether model uses channels_last format
+    
+    Returns:
+        Prediction tensor [1, 1, H, W] for binary segmentation
+    """
+    if device is None:
+        device = image.device
+    
+    C, H, W = image.shape[1], image.shape[2], image.shape[3]
+    patch_h, patch_w = patch_size
+    
+    # Create output accumulators
+    predictions = torch.zeros(1, 1, H, W, device=device, dtype=torch.float32)
+    weights = torch.zeros(1, 1, H, W, device=device, dtype=torch.float32)
+    
+    # Create Gaussian weight for smooth blending
+    def gaussian_window(h: int, w: int) -> torch.Tensor:
+        y = torch.linspace(-1, 1, h)
+        x = torch.linspace(-1, 1, w)
+        yy, xx = torch.meshgrid(y, x, indexing='ij')
+        weight = torch.exp(-(xx**2 + yy**2))
+        return weight.unsqueeze(0).unsqueeze(0).to(device)
+    
+    weight_map = gaussian_window(patch_h, patch_w)
+    
+    # Calculate stride
+    stride_h = patch_h - overlap
+    stride_w = patch_w - overlap
+    
+    # Sliding window
+    y_positions = list(range(0, H - patch_h + 1, stride_h))
+    x_positions = list(range(0, W - patch_w + 1, stride_w))
+    
+    # Add last positions if image is larger
+    if y_positions[-1] + patch_h < H:
+        y_positions.append(H - patch_h)
+    if x_positions[-1] + patch_w < W:
+        x_positions.append(W - patch_w)
+    
+    total_patches = len(y_positions) * len(x_positions)
+    print(f'Sliding window: Processing {total_patches} patches ({len(y_positions)}×{len(x_positions)}) with overlap={overlap}px')
+    
+    for y in y_positions:
+        for x in x_positions:
+            # Extract patch
+            patch = image[:, :, y:y+patch_h, x:x+patch_w]
+            
+            # Apply channels_last if needed
+            if uses_channels_last:
+                patch = patch.contiguous(memory_format=torch.channels_last)
+            
+            # Inference
+            if use_amp:
+                with torch.autocast(device_type='cuda', dtype=amp_dtype):
+                    logits = model(patch)
+            else:
+                logits = model(patch)
+            
+            # Convert logits to probabilities
+            if logits.dim() == 4:
+                logits = logits.squeeze(1)  # Remove channel dimension if present
+            probs = torch.sigmoid(logits).unsqueeze(1)  # [1, 1, H, W]
+            
+            # Accumulate with Gaussian weighting
+            predictions[:, :, y:y+patch_h, x:x+patch_w] += probs * weight_map
+            weights[:, :, y:y+patch_h, x:x+patch_w] += weight_map
+    
+    # Normalize by weights
+    predictions = predictions / (weights + 1e-8)
+    
+    return predictions
+
+
+def _is_divisible_by_16(height: int, width: int) -> bool:
+    """Check if dimensions are divisible by 16."""
+    return (height % 16 == 0) and (width % 16 == 0)
 
 
 @torch.inference_mode()
@@ -163,6 +224,7 @@ def _evaluate_segmentation(
         criterion=criterion,
         optimizer_class=torch.optim.AdamW,
         optimizer_kwargs={'lr': 1e-4},
+        strict=False,
     )
 
     lit_model.to(device)
@@ -189,6 +251,38 @@ def _evaluate_segmentation(
         resize_to=resize_to,
         augment=False,
     )
+    
+    # Determine if we need sliding window inference
+    # Check if original dataset resolution is divisible by 16
+    sample_batch = next(iter(test_loader))
+    sample_img = sample_batch[0][0]  # Get first image
+    img_h, img_w = sample_img.shape[-2], sample_img.shape[-1]
+    
+    use_sliding_window = not _is_divisible_by_16(img_h, img_w)
+    
+    if use_sliding_window:
+        print(f'\n{"="*60}')
+        print(f'Image size {img_h}×{img_w} is NOT divisible by 16.')
+        print(f'Enabling Sliding Window Inference for optimal quality.')
+        print(f'{"="*60}\n')
+        
+        # Determine patch size (closest divisible by 16, smaller than image)
+        patch_h = min((img_h // 16) * 16, 576)
+        patch_w = min((img_w // 16) * 16, 576)
+        if patch_h == 0:
+            patch_h = 16
+        if patch_w == 0:
+            patch_w = 16
+        patch_size = (patch_h, patch_w)
+        overlap = min(64, patch_h // 4, patch_w // 4)
+        print(f'Patch size: {patch_size}, Overlap: {overlap}px')
+    else:
+        print(f'\n{"="*60}')
+        print(f'Image size {img_h}×{img_w} is divisible by 16.')
+        print(f'Using standard inference (no sliding window needed).')
+        print(f'{"="*60}\n')
+        patch_size = None
+        overlap = None
 
     # Initialize metrics
     task = 'binary' if lit_model.num_classes == 2 else 'multiclass'
@@ -206,17 +300,63 @@ def _evaluate_segmentation(
 
     print(f'Evaluating on {dataset.upper()} {split} split...')
     
-    for imgs, masks in test_loader:
+    for batch_idx, (imgs, masks) in enumerate(test_loader):
         imgs = imgs.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
         
-        # Apply channels_last to input if model uses it
-        if uses_channels_last and device.type == 'cuda':
-            imgs = imgs.contiguous(memory_format=torch.channels_last)
+        # Choose inference method based on image dimensions
+        if use_sliding_window:
+            # Process each image in batch separately with sliding window
+            batch_preds = []
+            for i in range(imgs.shape[0]):
+                single_img = imgs[i:i+1]  # [1, C, H, W]
+                
+                # Sliding window inference returns probabilities
+                pred_probs = _sliding_window_inference(
+                    model=lit_model,
+                    image=single_img,
+                    patch_size=patch_size, # pyright: ignore[reportArgumentType]
+                    overlap=overlap, # pyright: ignore[reportArgumentType]
+                    device=device,
+                    use_amp=use_amp,
+                    amp_dtype=amp_dtype,
+                    uses_channels_last=uses_channels_last,
+                )
+                
+                # Convert to binary predictions
+                pred_binary = (pred_probs > 0.5).squeeze(1).long()  # [1, H, W]
+                batch_preds.append(pred_binary)
+            
+            preds = torch.cat(batch_preds, dim=0)  # [B, H, W]
+            
+            # Calculate loss (use first image for demonstration)
+            # Note: For sliding window, we use the averaged probabilities
+            logits = torch.logit(pred_probs.squeeze(0), eps=1e-6)  # Convert back to logits for loss
+            if lit_model.num_classes == 2:
+                loss = lit_model.criterion(logits, masks[0:1].float())
+            else:
+                loss = lit_model.criterion(logits.unsqueeze(0), masks[0:1])
+                
+        else:
+            # Standard inference (no sliding window)
+            # Apply channels_last to input if model uses it
+            if uses_channels_last and device.type == 'cuda':
+                imgs = imgs.contiguous(memory_format=torch.channels_last)
 
-        # Use autocast for mixed precision if enabled
-        if use_amp:
-            with torch.autocast(device_type='cuda', dtype=amp_dtype):
+            # Use autocast for mixed precision if enabled
+            if use_amp:
+                with torch.autocast(device_type='cuda', dtype=amp_dtype):
+                    logits = lit_model(imgs)
+                    
+                    if lit_model.num_classes == 2:
+                        if logits.dim() == 4:
+                            logits = logits.squeeze(1)
+                        loss = lit_model.criterion(logits, masks.float())
+                        preds = (torch.sigmoid(logits) > 0.5).long()
+                    else:
+                        loss = lit_model.criterion(logits, masks)
+                        preds = logits.argmax(dim=1)
+            else:
                 logits = lit_model(imgs)
                 
                 if lit_model.num_classes == 2:
@@ -227,23 +367,16 @@ def _evaluate_segmentation(
                 else:
                     loss = lit_model.criterion(logits, masks)
                     preds = logits.argmax(dim=1)
-        else:
-            logits = lit_model(imgs)
-            
-            if lit_model.num_classes == 2:
-                if logits.dim() == 4:
-                    logits = logits.squeeze(1)
-                loss = lit_model.criterion(logits, masks.float())
-                preds = (torch.sigmoid(logits) > 0.5).long()
-            else:
-                loss = lit_model.criterion(logits, masks)
-                preds = logits.argmax(dim=1)
 
         for metric in metrics.values():
             metric(preds, masks)
 
         total_loss += loss.item() * imgs.size(0)
         total_samples += imgs.size(0)
+        
+        # Progress indicator
+        if (batch_idx + 1) % 10 == 0:
+            print(f'  Processed {total_samples} samples...')
 
     avg_loss = total_loss / max(total_samples, 1)
     results = {

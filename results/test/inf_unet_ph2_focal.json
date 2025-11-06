@@ -1,0 +1,18 @@
+{
+  "metrics": {
+    "loss": 0.7782253523667654,
+    "iou": 0.34697335958480835,
+    "accuracy": 0.4286727011203766,
+    "sensitivity": 0.9814338684082031,
+    "specificity": 0.18113498389720917,
+    "precision": 0.3492658734321594,
+    "dice": 0.45303648710250854,
+    "samples": 30
+  },
+  "checkpoint": "unet_ph2_abliation_study/_focal/checkpoints/ph2_focal_best.ckpt",
+  "model": "unet",
+  "dataset": "ph2",
+  "split": "test",
+  "batch_size": 1,
+  "resize_to": null
+}
