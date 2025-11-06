@@ -1,18 +1,18 @@
 {
   "metrics": {
-    "loss": 2.005009889602661,
-    "iou": 0.1487824022769928,
-    "accuracy": 0.4315129220485687,
-    "sensitivity": 0.9599652290344238,
-    "specificity": 0.37049803137779236,
-    "precision": 0.14971134066581726,
-    "dice": 0.25902625918388367,
-    "samples": 3
+    "loss": 0.16617831190427143,
+    "iou": 0.8177891969680786,
+    "accuracy": 0.9412730932235718,
+    "sensitivity": 0.8521479368209839,
+    "specificity": 0.9811851978302002,
+    "precision": 0.9530127644538879,
+    "dice": 0.9031216502189636,
+    "samples": 30
   },
   "checkpoint": "enc_dec_ph2/_bce/checkpoints/ph2_bce_best.ckpt",
   "model": "encoder_decoder",
-  "dataset": "drive",
+  "dataset": "ph2",
   "split": "test",
-  "batch_size": 4,
+  "batch_size": 1,
   "resize_to": null
 }
