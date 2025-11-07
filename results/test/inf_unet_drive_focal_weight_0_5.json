@@ -1,0 +1,18 @@
+{
+  "metrics": {
+    "loss": 0.20767132441202799,
+    "iou": 0.574648380279541,
+    "accuracy": 0.9504121541976929,
+    "sensitivity": 0.6472218632698059,
+    "specificity": 0.9854183793067932,
+    "precision": 0.8367295265197754,
+    "dice": 0.7299695014953613,
+    "samples": 3
+  },
+  "checkpoint": "unet_drive_focal_weight_0_5/_focal/checkpoints/drive_focal_best.ckpt",
+  "model": "unet",
+  "dataset": "drive",
+  "split": "test",
+  "batch_size": 1,
+  "resize_to": null
+}

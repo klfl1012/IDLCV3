@@ -8,7 +8,6 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torchmetrics as tm
-import segmentation_models_pytorch as smp
 from torch.utils.data import DataLoader
 
 from dataloader import build_segmentation_dataloader
