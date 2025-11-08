@@ -43,15 +43,15 @@ class EncoderDecoderModel(nn.Module):
     ):
         super().__init__()
         features_maps = features or [64, 128, 256, 512]
-        my_list.insert(0, in_channel)
+        features_maps.insert(0, in_channels)
         # 1. Encoder
         self.encoder = nn.Sequential()
-        for i in range(len(feature_maps) - 1):
+        for i in range(len(features_maps) - 1):
             self.encoder.add_module('ConvBMAVBlock',                 
                 ConvBMAVBlock(
                     features_maps[i],
                     features_maps[i + 1],
-                    dropout if channels != in_channels else None,
+                    dropout if features_maps[i] != in_channels else None,
                     activation,
                     kernel_size,
                     stride,
