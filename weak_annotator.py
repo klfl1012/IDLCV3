@@ -18,7 +18,7 @@ def image_to_bounding_box(mask_array):
     return bounding_box_coordinates_tuples
 
 # Logic is somewhat similar to Leetcode #200
-def region_growing(image, seeds, threshold=1):
+def region_growing(image, seeds, threshold=0.05):
     # 1. Initialization - Create mask & visited, initialized as zeros / false of the same shape as the image
     mask = np.full_like(image, -1,  dtype=np.int8)
     visited = np.zeros_like(image, dtype=bool)
@@ -41,7 +41,7 @@ def region_growing(image, seeds, threshold=1):
             # Process neighbor coords that are within bounds
             nx, ny = x + dx, y + dy
             if 0 <= nx < image.shape[1] and 0 <= ny < image.shape[0] and not visited[ny, nx]: 
-                if abs(int(image[ny, nx]) - int(image[y, x])) <= threshold:
+                if (abs(image[ny, nx]) - image[y, x]) <= threshold:
                     mask[ny, nx] = clas
                     visited[ny, nx] = True
                     queue.append((nx, ny, clas))
