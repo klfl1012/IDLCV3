@@ -5,16 +5,374 @@ import json
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torchmetrics as tm
 from torch.utils.data import DataLoader
+from pytorch_lightning.loggers import TensorBoardLogger
 
 from dataloader import build_segmentation_dataloader
 from model_registry import rebuild_model_from_config
 from trainer import LitSegmenter
 import torch.nn.functional as F
 from losses import *
+import torchvision
+
+
+def _save_prediction_example(
+    image: torch.Tensor,
+    ground_truth: torch.Tensor,
+    prediction: torch.Tensor,
+    save_path: Path,
+    batch_idx: int = 0,
+    sample_idx: int = 0,
+) -> None:
+    img_np = image.cpu().numpy().transpose(1, 2, 0)  # [H, W, C]
+    
+    # Clip to valid range (in case of normalization artifacts)
+    img_np = np.clip(img_np, 0, 1)
+    
+    gt_np = ground_truth.cpu().numpy()
+    pred_np = prediction.cpu().numpy()
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    axes[0].imshow(img_np)
+    axes[0].set_title('Input Image', fontsize=14, fontweight='bold')
+    axes[0].axis('off')
+    
+    axes[1].imshow(img_np)
+    axes[1].imshow(gt_np, alpha=0.5, cmap='jet')
+    axes[1].set_title('Ground Truth', fontsize=14, fontweight='bold')
+    axes[1].axis('off')
+    
+    axes[2].imshow(img_np)
+    axes[2].imshow(pred_np, alpha=0.5, cmap='jet')
+    axes[2].set_title('Prediction', fontsize=14, fontweight='bold')
+    axes[2].axis('off')
+    
+    plt.tight_layout()
+    
+    output_path = save_path.parent / f'{save_path.stem}_batch{batch_idx}_sample{sample_idx}.png'
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f'  Saved visualization: {output_path.name}')
+
+
+def generate_and_save_predictions(
+    model: nn.Module,
+    dataloader,
+    mask_folder: Path,
+    device: torch.device,
+    use_amp: bool = False,
+) -> None:
+    """
+    Generate predictions and overwrite masks on disk.
+    
+    Args:
+        model: Trained model
+        dataloader: DataLoader with all samples
+        mask_folder: Path to folder where masks should be saved (e.g., region_growing_masks/10point/)
+        device: Device to run inference on
+        use_amp: Whether to use mixed precision
+    """
+    from PIL import Image
+    
+    model.eval()
+    model.to(device)
+    
+    print(f'\n{"="*60}')
+    print(f'Generating predictions and updating masks...')
+    print(f'{"="*60}')
+    
+    with torch.inference_mode():
+        for batch_idx, (imgs, masks) in enumerate(dataloader):
+            imgs = imgs.to(device, non_blocking=True)
+            
+            # Run inference
+            if use_amp:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    logits = model(imgs)
+            else:
+                logits = model(imgs)
+            
+            # Convert logits to binary predictions
+            if logits.dim() == 4:
+                logits = logits.squeeze(1)  # Remove channel dimension
+            preds = (torch.sigmoid(logits) > 0.5).cpu().numpy()  # [B, H, W]
+            
+            # Save each prediction as mask
+            for i in range(preds.shape[0]):
+                sample_idx = batch_idx * dataloader.batch_size + i
+                if sample_idx >= len(dataloader.dataset.samples):
+                    break
+                
+                # Get original mask path
+                original_mask_path = dataloader.dataset.samples[sample_idx].mask_path
+                
+                # Convert prediction to image (0-255)
+                pred_mask = (preds[i] * 255).astype(np.uint8)
+                
+                # Save as image (overwrite old mask)
+                mask_img = Image.fromarray(pred_mask, mode='L')
+                mask_img.save(original_mask_path)
+                
+                if (sample_idx + 1) % 10 == 0:
+                    print(f'  Updated {sample_idx + 1} masks...')
+    
+    print(f'✓ Updated all {len(dataloader.dataset)} masks in {mask_folder}')
+    print(f'{"="*60}\n')
+
+
+def log_weak_label_progress(
+    model: nn.Module,
+    dataloader,
+    tensorboard_logger: TensorBoardLogger,
+    device: torch.device,
+    iteration: int,
+    use_amp: bool = False,
+    num_samples: int = 8,
+    seed: int = 21,
+) -> None:
+    """
+    Log weak label predictions to TensorBoard to visualize progress across iterations.
+    
+    Args:
+        model: Trained model
+        dataloader: DataLoader with weak label samples
+        tensorboard_logger: TensorBoard logger instance
+        device: Device to run inference on
+        iteration: Current iteration number
+        use_amp: Whether to use mixed precision
+        num_samples: Number of random samples to visualize
+        seed: Random seed for reproducibility
+    """
+    
+    model.eval()
+    model.to(device)
+    
+    all_imgs = []
+    all_masks = []
+    all_preds = []
+    
+    print(f'\nGenerating predictions for TensorBoard logging...')
+    
+    with torch.inference_mode():
+        for imgs, masks in dataloader:
+            imgs = imgs.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
+            
+            # Run inference
+            if use_amp:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    logits = model(imgs)
+            else:
+                logits = model(imgs)
+            
+            # Convert to predictions
+            if logits.dim() == 4:
+                logits = logits.squeeze(1)
+            preds = (torch.sigmoid(logits) > 0.5).float()
+            
+            all_imgs.append(imgs.cpu())
+            all_masks.append(masks.cpu())
+            all_preds.append(preds.cpu())
+    
+    # Concatenate all batches
+    all_imgs = torch.cat(all_imgs, dim=0)  # [N, 3, H, W]
+    all_masks = torch.cat(all_masks, dim=0)  # [N, H, W]
+    all_preds = torch.cat(all_preds, dim=0)  # [N, H, W]
+    
+    # Randomly select samples
+    total_samples = all_imgs.size(0)
+    num_to_log = min(num_samples, total_samples)
+    
+    # Random selection with FIXED seed for reproducibility (same samples across all iterations)
+    torch.manual_seed(seed)  # Same seed → same images every iteration
+    indices = torch.randperm(total_samples)[:num_to_log]
+    
+    imgs_viz = all_imgs[indices]
+    masks_viz = all_masks[indices].unsqueeze(1).float()  # [N, 1, H, W]
+    preds_viz = all_preds[indices].unsqueeze(1).float()  # [N, 1, H, W]
+    
+    # Convert to 3-channel for visualization
+    masks_rgb = masks_viz.repeat(1, 3, 1, 1)
+    preds_rgb = preds_viz.repeat(1, 3, 1, 1)
+    
+    # Create grid: [Original | Weak Labels | Predictions]
+    grid = torchvision.utils.make_grid(
+        torch.cat([imgs_viz, masks_rgb, preds_rgb], dim=0),
+        nrow=num_to_log,
+        normalize=True,
+        scale_each=True,
+    )
+    
+    # Log to TensorBoard
+    tensorboard_logger.experiment.add_image(
+        f'weak_labels_progress/iteration_{iteration}',
+        grid,
+        global_step=iteration,
+    )
+    
+    print(f'✓ Logged {num_to_log} weak label predictions to TensorBoard (iteration {iteration})')
+
+
+def evaluate_on_ph2_test_set(
+    checkpoint_path: Path,
+    model: nn.Module,
+    criterion: nn.Module,
+    optimizer_class: type,
+    optimizer_kwargs: dict,
+    batch_size: int,
+    resize_to: tuple[int, int],
+    device: torch.device,
+    use_amp: bool = False,
+    seed: int = 21,
+    log_images_to_tensorboard: bool = True,
+    tensorboard_logger: Optional[TensorBoardLogger] = None,
+    experiment_name: str = 'final_evaluation',
+    num_samples_to_log: int = 10,
+) -> dict[str, float]:
+    """
+    Evaluate trained model on real PH2 test set and optionally log predictions to TensorBoard.
+    
+    Args:
+        checkpoint_path: Path to model checkpoint
+        model: Model architecture (for loading checkpoint)
+        criterion: Loss criterion
+        optimizer_class: Optimizer class
+        optimizer_kwargs: Optimizer kwargs
+        batch_size: Batch size for evaluation
+        resize_to: Image resize dimensions (H, W)
+        device: Device to run on
+        use_amp: Use mixed precision
+        seed: Random seed
+        log_images_to_tensorboard: Whether to log prediction images
+        tensorboard_logger: TensorBoard logger instance (required if log_images_to_tensorboard=True)
+        experiment_name: Name for TensorBoard logging
+        num_samples_to_log: Number of random samples to log to TensorBoard (default: 10)
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    print(f'\n{"="*80}')
+    print(f'FINAL EVALUATION ON REAL PH2 TEST SPLIT')
+    print(f'{"="*80}\n')
+    
+    # Build real PH2 test dataloader
+    ph2_test_loader = build_segmentation_dataloader(
+        dataset='ph2',
+        split='test',
+        batch_size=batch_size,
+        shuffle=False,
+        resize_to=resize_to,
+        augment=False,
+        num_workers=4,
+        seed=seed,
+    )
+    
+    # Load best model
+    best_model = LitSegmenter.load_from_checkpoint(
+        str(checkpoint_path),
+        model=model,
+        criterion=criterion,
+        optimizer_class=optimizer_class,
+        optimizer_kwargs=optimizer_kwargs,
+        strict=False,
+    )
+    best_model.to(device)
+    best_model.eval()
+    
+    # Metrics
+    total_correct = 0
+    total_pixels = 0
+    all_imgs = []
+    all_masks = []
+    all_preds = []
+    
+    print(f'Running inference on {len(str(ph2_test_loader.dataset))} test samples...')
+    
+    with torch.inference_mode():
+        for imgs, masks in ph2_test_loader:
+            imgs = imgs.to(device)
+            masks = masks.to(device)
+            
+            if use_amp:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    logits = best_model(imgs)
+            else:
+                logits = best_model(imgs)
+            
+            if logits.dim() == 4:
+                logits = logits.squeeze(1)
+            preds = (torch.sigmoid(logits) > 0.5).long()
+            
+            total_correct += (preds == masks).sum().item()
+            total_pixels += masks.numel()
+            
+            # Store for visualization
+            if log_images_to_tensorboard:
+                all_imgs.append(imgs.cpu())
+                all_masks.append(masks.cpu())
+                all_preds.append(preds.cpu())
+    
+    accuracy = total_correct / total_pixels
+    
+    print(f'\n{"="*80}')
+    print(f'PH2 Test Set Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)')
+    print(f'{"="*80}\n')
+    
+    # Log images to TensorBoard
+    if log_images_to_tensorboard and tensorboard_logger is not None:
+        import torchvision
+        
+        # Concatenate all batches
+        all_imgs = torch.cat(all_imgs, dim=0)  # [N, 3, H, W]
+        all_masks = torch.cat(all_masks, dim=0)  # [N, H, W]
+        all_preds = torch.cat(all_preds, dim=0)  # [N, H, W]
+        
+        # Randomly select num_samples_to_log samples
+        total_samples = all_imgs.size(0)
+        num_to_log = min(num_samples_to_log, total_samples)
+        
+        # Random selection with seed for reproducibility
+        torch.manual_seed(seed)
+        indices = torch.randperm(total_samples)[:num_to_log]
+        
+        imgs_viz = all_imgs[indices]
+        masks_viz = all_masks[indices].unsqueeze(1).float()  # [N, 1, H, W]
+        preds_viz = all_preds[indices].unsqueeze(1).float()  # [N, 1, H, W]
+        
+        # Convert to 3-channel for visualization
+        masks_rgb = masks_viz.repeat(1, 3, 1, 1)
+        preds_rgb = preds_viz.repeat(1, 3, 1, 1)
+        
+        # Create grid: [Original | Ground Truth | Prediction]
+        grid = torchvision.utils.make_grid(
+            torch.cat([imgs_viz, masks_rgb, preds_rgb], dim=0),
+            nrow=num_to_log,
+            normalize=True,
+            scale_each=True,
+        )
+        
+        # Log to TensorBoard
+        tensorboard_logger.experiment.add_image(
+            f'{experiment_name}/ph2_test_predictions',
+            grid,
+            global_step=0,
+        )
+        
+        print(f'✓ Logged {num_to_log} randomly selected prediction examples to TensorBoard')
+    
+    return {
+        'accuracy': accuracy,
+        'total_correct': total_correct,
+        'total_pixels': total_pixels,
+    }
+
 
 def _rebuild_criterion_from_hparams(criterion_class, criterion_kwargs: dict) -> nn.Module:
     '''
@@ -171,6 +529,7 @@ def _evaluate_segmentation(
     device: Optional[torch.device] = None,
     save_path: Optional[Path] = None,
     precision: Optional[str] = None,
+    save_examples: bool = True,
 ) -> dict:
     
     if device is None:
@@ -373,6 +732,18 @@ def _evaluate_segmentation(
         total_loss += loss.item() * imgs.size(0)
         total_samples += imgs.size(0)
         
+        # Save example visualizations (one per batch)
+        if save_examples and save_path is not None:
+            # Save first sample from this batch
+            _save_prediction_example(
+                image=imgs[0],
+                ground_truth=masks[0],
+                prediction=preds[0],
+                save_path=save_path,
+                batch_idx=batch_idx,
+                sample_idx=0,
+            )
+        
         # Progress indicator
         if (batch_idx + 1) % 10 == 0:
             print(f'  Processed {total_samples} samples...')
@@ -417,7 +788,9 @@ def _build_args() -> argparse.Namespace:
     parser.add_argument('--resize', type=int, nargs=2, default=None, metavar=('HEIGHT', 'WIDTH'), help='Resize images to (H, W). Example: --resize 572 572')
     parser.add_argument('--metrics-out', type=Path, default=None, help='Optional path to save evaluation metrics as JSON')
     parser.add_argument('--precision', type=str, choices=['32', '16-mixed', 'bf16-mixed'], default=None, help='Precision mode for evaluation (32, 16-mixed, bf16-mixed). Auto-detected from checkpoint if not specified.')
+    parser.add_argument('--no-save-examples', action='store_true', help='Disable saving example prediction visualizations')
     return parser.parse_args()
+
 
 
 def main():
@@ -425,7 +798,6 @@ def main():
     
     # Convert resize_to to tuple if provided
     resize_to = tuple(args.resize) if args.resize else None
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
 
@@ -439,6 +811,7 @@ def main():
         resize_to=resize_to,
         device=device,
         save_path=args.metrics_out,
+        save_examples=not args.no_save_examples,
     )
 
     print('\n' + '='*60)
