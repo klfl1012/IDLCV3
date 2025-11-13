@@ -8,7 +8,7 @@ from typing import Optional, Type, Any
 from torch.profiler import ProfilerActivity, schedule
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.profilers import PyTorchProfiler
-from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
+from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger, Logger
 from torchvision.utils import make_grid
 
 
@@ -30,6 +30,7 @@ class LitSegmenter(pl.LightningModule):
         criterion_class: Optional[Type[nn.Module]] = None,
         criterion_kwargs: Optional[dict] = None,
         precision: str = '32',  # Add precision parameter
+        log_images: bool = False,  # Enable/disable image logging
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model', 'criterion'])
@@ -43,6 +44,7 @@ class LitSegmenter(pl.LightningModule):
         self.log_imgs_every_n_epochs = log_imgs_every_n_epochs
         self.num_classes = num_classes
         self.outdir = Path(outdir)
+        self.log_images = log_images
         os.makedirs(self.outdir, exist_ok=True)
 
         # metrics
@@ -134,13 +136,13 @@ class LitSegmenter(pl.LightningModule):
 
         self._train_epoch_outputs.append(outputs)
 
-        # Image logging disabled to save I/O
-        # if batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-        #     self._train_vis_batch = {
-        #         'imgs': outputs['imgs'][:4].detach().cpu(),
-        #         'masks': outputs['masks'][:4].detach().cpu(),
-        #         'preds': outputs['preds'][:4].detach().cpu(),
-        #     }
+        # Image logging for weak labels ablation
+        if self.log_images and batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+            self._train_vis_batch = {
+                'imgs': outputs['imgs'][:4].detach().cpu(),
+                'masks': outputs['masks'][:4].detach().cpu(),
+                'preds': outputs['preds'][:4].detach().cpu(),
+            }
         
         return outputs['loss']
     
@@ -162,13 +164,13 @@ class LitSegmenter(pl.LightningModule):
         
         self._val_epoch_outputs.append(outputs['loss'].detach())
         
-        # Image logging disabled to save I/O
-        # if batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-        #     self._val_vis_batch = {
-        #         'imgs': outputs['imgs'][:4].detach().cpu(), 
-        #         'preds': outputs['preds'][:4].detach().cpu(),
-        #         'masks': outputs['masks'][:4].detach().cpu(),
-        #     }
+        # Image logging for weak labels ablation
+        if self.log_images and batch_idx == 0 and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+            self._val_vis_batch = {
+                'imgs': outputs['imgs'][:4].detach().cpu(), 
+                'preds': outputs['preds'][:4].detach().cpu(),
+                'masks': outputs['masks'][:4].detach().cpu(),
+            }
         
         return outputs['loss']
     
@@ -184,10 +186,10 @@ class LitSegmenter(pl.LightningModule):
             self.history['train_precision'].append(self.train_precision.compute().item())
             self._train_epoch_outputs.clear()
 
-        # Image logging disabled
-        # if hasattr(self, '_train_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-        #     self._log_segmentations_imgs(self._train_vis_batch, 'train')
-        #     delattr(self, '_train_vis_batch')
+        # Image logging for weak labels ablation
+        if self.log_images and hasattr(self, '_train_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+            self._log_segmentations_imgs(self._train_vis_batch, 'train')
+            delattr(self, '_train_vis_batch')
 
     
     def on_validation_epoch_end(self) -> None:
@@ -201,10 +203,10 @@ class LitSegmenter(pl.LightningModule):
             self.history['val_precision'].append(self.val_precision.compute().item())
             self._val_epoch_outputs.clear()
 
-        # Image logging disabled
-        # if hasattr(self, '_val_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
-        #     self._log_segmentations_imgs(self._val_vis_batch, 'val')
-        #     delattr(self, '_val_vis_batch')
+        # Image logging for weak labels ablation
+        if self.log_images and hasattr(self, '_val_vis_batch') and self.current_epoch % self.log_imgs_every_n_epochs == 0:
+            self._log_segmentations_imgs(self._val_vis_batch, 'val')
+            delattr(self, '_val_vis_batch')
 
     def _log_segmentations_imgs(
         self,
@@ -222,13 +224,13 @@ class LitSegmenter(pl.LightningModule):
         grid = torch.cat([imgs, preds_viz.repeat(1, 3, 1, 1), masks_viz.repeat(1, 3, 1, 1)], dim=0)
         grid = make_grid(grid, nrow=len(imgs), normalize=True, value_range=(0, 1))
 
-        # TensorBoard image logging (disabled)
-        # if isinstance(self.logger, TensorBoardLogger):
-        #     self.logger.experiment.add_image(
-        #         f'{stage}_preds',
-        #         grid,
-        #         global_step=self.current_epoch
-        #     )
+        # TensorBoard image logging (enabled when log_images=True)
+        if isinstance(self.logger, TensorBoardLogger):
+            self.logger.experiment.add_image(
+                f'{stage}_preds',
+                grid,
+                global_step=self.current_epoch
+            )
         
     def configure_optimizers(self) -> dict[str, Any]:
         optimizer = self.optimizer_class(self.parameters(), **self.optimizer_kwargs)
@@ -263,40 +265,53 @@ def get_segm_trainer(
     gradient_clip_val: Optional[float] = 1.0,
     accumulate_grad_batches: int = 1,
     use_mixed_precision: bool = False,
+    log_images: bool = False,  
+    enable_checkpointing: bool = True,
 ) -> pl.Trainer:
     
     outdir_path = Path(outdir)
     os.makedirs(outdir_path, exist_ok=True)
+    
+    callbacks: list = []
 
-    callbacks = [
-        ModelCheckpoint(
-            monitor='val_iou',
-            dirpath=outdir_path / 'checkpoints',
-            filename=f'{experiment_name}_best',  # Fixed filename (gets overwritten)
-            save_top_k=1,  # Only save THE best model
-            mode='max',
-            save_last=False,  # Don't save last checkpoint to save space
-        ),
-        EarlyStopping(
-            monitor='val_loss',
-            patience=early_stopping_patience,
-            mode='min',
-            verbose=True,
-        ),
-        LearningRateMonitor(logging_interval='epoch'),
-    ]
+    if enable_checkpointing:
+        callbacks.extend([
+            ModelCheckpoint(
+                dirpath=str(outdir_path / 'checkpoints'),
+                filename='{epoch}-{val_loss:.4f}',
+                save_top_k=1,
+                monitor='val_loss',
+                mode='min',
+                save_last=False,
+                verbose=True,
+            ),
+            EarlyStopping(
+                monitor='val_loss',
+                patience=early_stopping_patience,
+                mode='min',
+                verbose=True,
+            ),
+        ])
 
-    loggers = [
-        # TensorBoard Logger (disabled to save space and I/O)
-        # TensorBoardLogger(
-        #     save_dir=outdir_path / 'logs',
-        #     name=experiment_name,
-        # ),
+    callbacks.append(
+        LearningRateMonitor(logging_interval='epoch')
+    )
+
+    loggers: list[Logger]= [
         CSVLogger(
             save_dir=outdir_path / 'logs',
             name=experiment_name,
         ),
     ]
+
+    # Enable TensorBoard logger when log_images=True (for weak labels ablation)
+    if log_images:
+        loggers.append(
+            TensorBoardLogger(
+                save_dir=outdir_path / 'logs',
+                name=experiment_name,
+            )
+        )
 
     profiler = None
     if enable_profiler:

@@ -19,6 +19,7 @@ from torchvision.transforms import InterpolationMode, functional as F
 DEFAULT_DATA_ROOTS = {
 	"drive": Path("/dtu/datasets1/02516/DRIVE"),
 	"ph2": Path("/dtu/datasets1/02516/PH2_Dataset_images"),
+	"weak_labels": Path("./region_growing_masks/"),
 }
 
 
@@ -118,6 +119,82 @@ def _discover_drive_samples(root: Path, split: str) -> List[SegmentationSample]:
 
     return samples
 
+
+def _discover_weak_label_samples(root: Path, subfolder: str) -> List[SegmentationSample]:
+    """Collect (image, mask) pairs from weak labels folder structure.
+    
+    Masks are in region_growing_masks/<subfolder>/
+    Images come from the PH2 dataset.
+    
+    Expected mask naming: IMD002_mask.bmp, IMD003_mask.bmp, etc.
+    We extract the patient ID (e.g., IMD002) and find the corresponding image in PH2 dataset.
+    """
+    mask_folder = root / subfolder
+    
+    if not mask_folder.is_dir():
+        raise FileNotFoundError(f"Weak labels folder not found: {mask_folder}")
+    
+    # Get PH2 dataset root
+    ph2_root = DEFAULT_DATA_ROOTS['ph2']
+    if not ph2_root.is_dir():
+        raise FileNotFoundError(f"PH2 dataset not found at: {ph2_root}")
+    
+    # Collect all mask files
+    image_extensions = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
+    mask_files = sorted([f for f in mask_folder.iterdir() 
+                        if f.suffix.lower() in image_extensions 
+                        and 'mask' in f.stem.lower()])
+    
+    if not mask_files:
+        raise ValueError(f"No mask files found in {mask_folder}")
+    
+    samples: List[SegmentationSample] = []
+    
+    for mask_path in mask_files:
+        # Extract patient ID from mask filename
+        # Example: IMD002_mask.bmp -> IMD002
+        mask_stem = mask_path.stem
+        patient_id = mask_stem.replace('_mask', '').replace('_label', '').upper()
+        
+        # Find corresponding image in PH2 dataset
+        # Structure: PH2_Dataset_images/IMD002/IMD002_Dermoscopic_Image/IMD002.bmp
+        patient_dir = ph2_root / patient_id
+        
+        if not patient_dir.is_dir():
+            print(f"Warning: Patient directory not found for {patient_id}, skipping...")
+            continue
+        
+        # Find dermoscopic image folder
+        image_dir = next(
+            (p for p in patient_dir.iterdir() 
+             if p.is_dir() and 'dermoscopic' in p.name.lower()),
+            None,
+        )
+        
+        if image_dir is None:
+            print(f"Warning: Dermoscopic image folder not found for {patient_id}, skipping...")
+            continue
+        
+        # Find the image file
+        image_path = None
+        for ext in image_extensions:
+            candidates = list(image_dir.glob(f"{patient_id}{ext}"))
+            if candidates:
+                image_path = candidates[0]
+                break
+        
+        if image_path is None:
+            print(f"Warning: Image file not found for {patient_id}, skipping...")
+            continue
+        
+        samples.append(SegmentationSample(image_path=image_path, mask_path=mask_path))
+    
+    if not samples:
+        raise ValueError(f"No valid image-mask pairs found in {mask_folder}")
+    
+    print(f"Found {len(samples)} weak label samples in {subfolder}/")
+    return samples
+
 def _split_samples(
 	samples: List[SegmentationSample],
 	split: str,
@@ -125,6 +202,12 @@ def _split_samples(
 	val_ratio: float = 0.15,
 	seed: int = 21,
 ) -> List[SegmentationSample]:
+	
+	split_lower = split.lower()
+	
+	# Special case: return all samples without splitting
+	if split_lower == 'all':
+		return samples
 	
 	n_total = len(samples)
 	n_train = int(n_total * train_ratio)
@@ -139,7 +222,6 @@ def _split_samples(
 	val_indices = shuffled_indices[n_train:n_train + n_val]
 	test_indices = shuffled_indices[n_train + n_val:]
 	
-	split_lower = split.lower()
 	if split_lower in {"train", "training"}:
 		return [samples[i] for i in train_indices]
 	elif split_lower in {"val", "validation"}:
@@ -165,15 +247,26 @@ class SegmentationDataset(Dataset):
 		resize_to: Optional[Tuple[int, int]] = None,
 		augment: bool = False,
 		brightness_delta: float = 0.15,
-		seed: int = 21
+		seed: int = 21,
+		weak_label_subfolder: Optional[str] = None,
 	) -> None:
 		dataset_key = dataset.lower()
-		if dataset_key not in {"drive", "ph2"}:
-			raise ValueError("dataset must be either 'drive' or 'ph2'.")
+		if dataset_key not in {"drive", "ph2", "weak_labels"}:
+			raise ValueError("dataset must be 'drive', 'ph2', or 'weak_labels'.")
 
 		root_path = Path(root) if root is not None else DEFAULT_DATA_ROOTS[dataset_key]
 
-		if dataset_key == "ph2":
+		if dataset_key == "weak_labels":
+			# Weak labels: load from specific subfolder
+			if weak_label_subfolder is None:
+				raise ValueError("weak_label_subfolder must be specified for weak_labels dataset")
+			all_samples = _discover_weak_label_samples(root_path, weak_label_subfolder)
+			samples = _split_samples(all_samples, split, seed=seed)
+			if split.lower() == 'all':
+				print(f"Weak labels ({weak_label_subfolder}): Using ALL {len(samples)} samples (no split)")
+			else:
+				print(f"Weak labels ({weak_label_subfolder}) {split} split: {len(samples)} samples (seed={seed})")
+		elif dataset_key == "ph2":
             # PH2: Get all samples, then split train/val/test
 			all_samples = _discover_ph2_samples(root_path)
 			samples = _split_samples(all_samples, split, seed=seed)
@@ -278,7 +371,8 @@ def build_segmentation_dataloader(
 	resize_to: Optional[Tuple[int, int]] = None,
 	augment: bool = False,
 	brightness_delta: float = 0.15,
-	seed: int = 21
+	seed: int = 21,
+	weak_label_subfolder: Optional[str] = None,
 ) -> DataLoader:
 	"""Create a DataLoader for the requested segmentation dataset."""
 
@@ -291,7 +385,8 @@ def build_segmentation_dataloader(
 		resize_to=resize_to,
 		augment=augment,
 		brightness_delta=brightness_delta,
-		seed=seed
+		seed=seed,
+		weak_label_subfolder=weak_label_subfolder,
 	)
 
 	return DataLoader(

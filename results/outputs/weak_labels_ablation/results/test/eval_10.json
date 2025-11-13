@@ -1,0 +1,18 @@
+{
+  "metrics": {
+    "loss": 1.2113856683174768,
+    "iou": 0.4600050747394562,
+    "accuracy": 0.8288576602935791,
+    "sensitivity": 0.4713475704193115,
+    "specificity": 0.988957941532135,
+    "precision": 0.9502881169319153,
+    "dice": 0.5932366847991943,
+    "samples": 30
+  },
+  "checkpoint": "outputs/weak_labels_ablation/10point/final_model/checkpoints/best.ckpt",
+  "model": "unet",
+  "dataset": "ph2",
+  "split": "test",
+  "batch_size": 1,
+  "resize_to": null
+}

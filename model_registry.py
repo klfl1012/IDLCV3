@@ -15,16 +15,9 @@ class ModelSpec:
     default_params: Optional[dict] = None
 
 
-# default configs for models
-DRIVE_CONFIG = {
-    'in_channels': 3,       # RGB images
-    'out_channels': 1,     # Binary segmentation (vessels)
-    'features': [64, 128, 256, 512],
-}
-
-PH2_CONFIG = {
-    'in_channels': 3,      # RGB images
-    'out_channels': 1,     # Binary segmentation (lesions)
+CONFIG = {
+    'in_channels': 3,       
+    'out_channels': 1,     
     'features': [64, 128, 256, 512],
 }
 
@@ -134,21 +127,17 @@ def build_model(
 ) -> tuple[nn.Module, dict]:
     spec = resolve_model(name)
     
-    # default parameters
-    params = spec.default_params.copy() if spec.default_params else {}
-    
-    # apply dataset-specific config
+    params = spec.default_params.copy() if spec.default_params else {} 
     dataset_key = dataset.lower()
     if dataset_key == 'drive':
-        params.update(DRIVE_CONFIG)
+        params.update(CONFIG)
     elif dataset_key == 'ph2':
-        params.update(PH2_CONFIG)
+        params.update(CONFIG)
     else:
-        raise ValueError(f'Unknown dataset "{dataset}". Choose "drive" or "ph2".')
+        raise ValueError(f'Unknown dataset "{dataset}". Choose "drive", "ph2", or "weak_labels".')
     
     # override with user-provided kwargs
     params.update(model_kwargs)
-    
     model = spec.build_fn(**params)
     
     # Detect if model uses channels_last (for compiled models)
@@ -158,12 +147,11 @@ def build_model(
         if flag_tensor is not None:
             uses_channels_last = bool(flag_tensor.item())
     
-    # Config für Reconstruction
     model_config = {
         'name': name,
         'dataset': dataset,
         'kwargs': params,
-        'uses_channels_last': uses_channels_last,  # Store channels_last flag
+        'uses_channels_last': uses_channels_last,  
     }
     
     print(f'Built {spec.name} for {dataset.upper()} dataset')
@@ -175,7 +163,6 @@ def build_model(
 
 
 def rebuild_model_from_config(model_config: dict) -> nn.Module:
-    """Rebuild model from saved config."""
     return build_model(
         name=model_config['name'],
         dataset=model_config['dataset'],
@@ -185,11 +172,9 @@ def rebuild_model_from_config(model_config: dict) -> nn.Module:
 
 __all__ = [
     'ModelSpec',
-    'MODEL_REGISTRY',
     'available_models',
     'resolve_model',
     'build_model',
+    'CONFIG',
     'rebuild_model_from_config',
-    'DRIVE_CONFIG',
-    'PH2_CONFIG',
 ]
